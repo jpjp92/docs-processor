@@ -4,6 +4,7 @@ out/
 dist/
 coverage/
 tsconfig.tsbuildinfo
+tmp/
 
 .env
 .env*.local
@@ -16,3 +17,10 @@ pnpm-debug.log*
 .DS_Store
 
 Ref/
+scripts/pdf-embedded-font-title-lab.mjs
+scripts/pdf-font-map-inspect.mjs
+scripts/pdf-incremental-text-replace.mjs
+scripts/pdf-selection-replace-lab.mjs
+scripts/pdf-stream-inspect.mjs
+scripts/pdf-text-object-lab.mjs
+scripts/pdf-title-overlay-lab.mjs
