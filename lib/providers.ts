@@ -24,9 +24,11 @@ export type ProviderResult = {
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
   claude: "claude-sonnet-4-6",
-  openai: "gpt-4o",
+  openai: "gpt-5-mini",
   gemini: "gemini-2.5-flash"
 };
+
+export const DISABLED_PROVIDERS: Provider[] = ["claude"];
 
 export function isProvider(value: unknown): value is Provider {
   return value === "claude" || value === "openai" || value === "gemini";
@@ -82,9 +84,10 @@ async function callClaude({ messages, model, apiKey, maxTokens }: ProviderOption
 }
 
 async function callOpenAI({ messages, model, apiKey, maxTokens }: ProviderOptions) {
+  const selectedModel = model || DEFAULT_MODELS.openai;
+  const tokenLimit = maxTokens || 4096;
   const body = {
-    model: model || DEFAULT_MODELS.openai,
-    max_tokens: maxTokens || 4096,
+    model: selectedModel,
     messages: messages.map((message) => ({
       role: message.role,
       content: message.content.map((part) =>
@@ -100,13 +103,18 @@ async function callOpenAI({ messages, model, apiKey, maxTokens }: ProviderOption
     }))
   };
 
+  const requestBody =
+    selectedModel.startsWith("gpt-5")
+      ? { ...body, max_completion_tokens: tokenLimit }
+      : { ...body, max_tokens: tokenLimit };
+
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${apiKey}`
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {

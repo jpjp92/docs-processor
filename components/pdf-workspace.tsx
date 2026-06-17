@@ -1,6 +1,17 @@
 "use client";
 
-import { ArrowLeft, Braces, Download, FileCode2, FileDown, Settings, X } from "lucide-react";
+import {
+  Braces,
+  FileCode2,
+  FileDown,
+  FilePlus2,
+  Loader2,
+  SendHorizontal,
+  Settings,
+  Sparkles,
+  Trash2,
+  X
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Provider = "claude" | "openai" | "gemini";
@@ -68,7 +79,7 @@ const PROVIDER_INFO: Record<Provider, { label: string; keyName: string; model: s
   openai: {
     label: "GPT (OpenAI)",
     keyName: "OpenAI API 키",
-    model: "gpt-4o",
+    model: "gpt-5-mini",
     url: "platform.openai.com"
   },
   gemini: {
@@ -79,12 +90,41 @@ const PROVIDER_INFO: Record<Provider, { label: string; keyName: string; model: s
   }
 };
 
+const FALLBACK_PROVIDER: Provider = "openai";
+const LOCAL_DISABLED_PROVIDERS: Provider[] = ["claude"];
+
 const PRESETS = [
-  "요약해줘",
-  "이 영역의 내용을 한국어로 번역해줘",
-  "표나 데이터가 있으면 마크다운 표로 정리해줘",
-  "핵심을 불릿 3개로 정리해줘"
+  "아래 형식으로 짧게 요약해줘.\n\n## 한줄 요약\n> 핵심 결론 1문장\n\n## 핵심 포인트\n- 포인트 1\n- 포인트 2\n- 포인트 3\n\n## 숫자/차트 의미\n- 중요한 수치나 비교가 있으면 2개 이내로 설명\n\n각 항목은 간결하게 작성해줘.",
+  "이 영역의 내용을 한국어로 번역해줘. 원문 구조를 유지하고, 표나 항목은 마크다운 목록으로 정리해줘.",
+  "표나 데이터가 있으면 마크다운 표로 정리해줘. 표 아래에는 '읽는 법' 섹션을 만들고 핵심 해석을 불릿 3개 이내로 덧붙여줘.",
+  "핵심을 아래 형식으로 불릿 3개로 정리해줘.\n\n## 핵심 3가지\n- **무엇:**\n- **왜 중요:**\n- **봐야 할 숫자:**"
 ];
+
+const PRESET_LABELS = ["요약", "번역", "표 정리", "핵심 3가지"];
+
+const DEFAULT_ANALYSIS_PROMPT = `이 영역의 내용을 한국어로 분석해줘.
+
+반드시 아래 형식으로 답해줘.
+
+## 한줄 요약
+> 이 영역이 말하는 핵심을 1문장으로 작성
+
+## 핵심 포인트
+- 가장 중요한 내용
+- 근거가 되는 수치/대상/비교
+- 사용자가 기억해야 할 의미
+
+## 세부 의미
+- 표/차트/수식이 있으면 무엇을 비교하는지 설명
+- 눈에 띄는 숫자는 2~4개만 골라 의미를 설명
+
+## 다음에 볼 것
+- 이어서 확인하면 좋은 질문 1개
+
+규칙:
+- 장문 문단보다 짧은 문장과 불릿을 우선해줘.
+- 보이지 않는 내용은 추측하지 말고 '이미지에서 확인되지 않음'이라고 써줘.
+- 마크다운만 사용하고 머리말은 쓰지 마.`;
 
 function escapeHtml(value: string) {
   return value
@@ -126,6 +166,22 @@ function renderMarkdown(source: string) {
     if (heading) {
       const level = heading[1].length + 2;
       html += `<h${level}>${inline(heading[2])}</h${level}>`;
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*>\s+/.test(line)) {
+      html += "<blockquote>";
+      while (i < lines.length && /^\s*>\s+/.test(lines[i])) {
+        html += `<p>${inline(lines[i].replace(/^\s*>\s+/, ""))}</p>`;
+        i += 1;
+      }
+      html += "</blockquote>";
+      continue;
+    }
+
+    if (/^\s*---+\s*$/.test(line)) {
+      html += "<hr />";
       i += 1;
       continue;
     }
@@ -204,6 +260,7 @@ function loadPdfJs(): Promise<PdfJsLib> {
 }
 
 export default function PdfWorkspace() {
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -224,17 +281,22 @@ export default function PdfWorkspace() {
   const [activeClipId, setActiveClipId] = useState<number | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [serverKeyProviders, setServerKeyProviders] = useState<Provider[]>([]);
+  const [disabledProviders, setDisabledProviders] = useState<Provider[]>(LOCAL_DISABLED_PROVIDERS);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [ai, setAi] = useState({ backend: "", provider: "claude" as Provider, model: "", key: "" });
+  const [ai, setAi] = useState({ backend: "", provider: FALLBACK_PROVIDER, model: "", key: "" });
   const [draftAi, setDraftAi] = useState(ai);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
   const [currentPageProxy, setCurrentPageProxy] = useState<PdfPage | null>(null);
   const [currentViewport, setCurrentViewport] = useState<{ transform: number[] } | null>(null);
   const [drag, setDrag] = useState<{ x: number; y: number; cur?: { x: number; y: number } } | null>(null);
+  const [thumbWidth, setThumbWidth] = useState(168);
+  const [inspectorWidth, setInspectorWidth] = useState(340);
+  const [resizeTarget, setResizeTarget] = useState<"thumbs" | "inspector" | null>(null);
   const [error, setError] = useState("");
 
   const totalPages = pdfDoc?.numPages || 0;
   const currentProviderInfo = PROVIDER_INFO[draftAi.provider];
+  const currentProviderDisabled = disabledProviders.includes(draftAi.provider);
   const providerHasServerKey = serverKeyProviders.includes(draftAi.provider);
 
   const visibleClips = useMemo(
@@ -256,6 +318,39 @@ export default function PdfWorkspace() {
     if (!pdfDoc || !pdfJsReady) return;
     void renderPage(pdfDoc, currentPage, scale);
   }, [pdfDoc, currentPage, scale, pdfJsReady]);
+
+  useEffect(() => {
+    if (!resizeTarget) return;
+
+    function handleResizeMove(event: PointerEvent) {
+      const workspace = workspaceRef.current;
+      if (!workspace) return;
+      const bounds = workspace.getBoundingClientRect();
+
+      if (resizeTarget === "thumbs") {
+        setThumbWidth(Math.min(Math.max(event.clientX - bounds.left, 120), 260));
+        return;
+      }
+
+      setInspectorWidth(Math.min(Math.max(bounds.right - event.clientX, 280), 560));
+    }
+
+    function stopResize() {
+      setResizeTarget(null);
+    }
+
+    document.body.classList.add("is-resizing-layout");
+    window.addEventListener("pointermove", handleResizeMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+
+    return () => {
+      document.body.classList.remove("is-resizing-layout");
+      window.removeEventListener("pointermove", handleResizeMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+  }, [resizeTarget]);
 
   async function renderPage(doc: PdfDocument, pageNumber: number, nextScale: number) {
     const canvas = canvasRef.current;
@@ -624,23 +719,41 @@ export default function PdfWorkspace() {
   }
 
   async function openSettings() {
+    let nextDisabledProviders = disabledProviders;
     try {
       const response = await fetch(`${ai.backend}/api/config`);
       if (response.ok) {
-        const config = (await response.json()) as { providersWithServerKey?: Provider[] };
+        const config = (await response.json()) as {
+          disabledProviders?: Provider[];
+          providersWithServerKey?: Provider[];
+        };
         setServerKeyProviders(config.providersWithServerKey || []);
+        nextDisabledProviders = config.disabledProviders || LOCAL_DISABLED_PROVIDERS;
+        setDisabledProviders(nextDisabledProviders);
       }
     } catch {
       setServerKeyProviders([]);
+      nextDisabledProviders = LOCAL_DISABLED_PROVIDERS;
+      setDisabledProviders(nextDisabledProviders);
     }
-    setDraftAi(ai);
+    setDraftAi(nextDisabledProviders.includes(ai.provider) ? { ...ai, provider: FALLBACK_PROVIDER, key: "" } : ai);
     setSettingsOpen(true);
   }
 
-  async function exchange(clipId: number, displayText: string, userContent: MessagePart[]) {
+  async function exchange(
+    clipId: number,
+    displayText: string,
+    userContent: MessagePart[],
+    options: { showUserTurn?: boolean } = {}
+  ) {
     const target = clips.find((clip) => clip.id === clipId);
     if (!target) return;
+    if (disabledProviders.includes(ai.provider)) {
+      setError("선택한 AI 프로바이더는 현재 비활성화되어 있습니다. 설정에서 OpenAI 또는 Gemini를 선택하세요.");
+      return;
+    }
 
+    const showUserTurn = options.showUserTurn ?? true;
     const nextMessages = [...target.messages, { role: "user" as const, content: userContent }];
     setClips((prev) =>
       prev.map((clip) =>
@@ -650,7 +763,7 @@ export default function PdfWorkspace() {
               started: true,
               loading: true,
               messages: nextMessages,
-              turns: [...clip.turns, { role: "user", text: displayText }]
+              turns: showUserTurn ? [...clip.turns, { role: "user", text: displayText }] : clip.turns
             }
           : clip
       )
@@ -717,7 +830,7 @@ export default function PdfWorkspace() {
     }
   }
 
-  function startThread(clip: Clip, question: string) {
+  function startThread(clip: Clip, question: string, options: { showUserTurn?: boolean } = {}) {
     const content: MessagePart[] = [
       { type: "image", mediaType: "image/png", data: clip.dataUrl.split(",")[1] },
       {
@@ -730,13 +843,13 @@ export default function PdfWorkspace() {
           `요청: ${question}\n\n한국어로, 머리말 없이 본문만 마크다운으로 답하세요.`
       }
     ];
-    void exchange(clip.id, question, content);
+    void exchange(clip.id, question, content, options);
   }
 
   function submitFollowup(clip: Clip, question: string) {
     if (!question.trim()) return;
     if (!clip.started) {
-      startThread(clip, question);
+      startThread(clip, question, { showUserTurn: true });
       return;
     }
     void exchange(clip.id, question, [{ type: "text", text: question }]);
@@ -823,7 +936,7 @@ export default function PdfWorkspace() {
         <div className="topbar-actions">
           {pdfDoc && (
             <button className="icon-btn" type="button" aria-label="새 문서 분석" title="새 문서 분석" onClick={resetDocument}>
-              <ArrowLeft size={19} />
+              <FilePlus2 size={19} />
             </button>
           )}
           <button className="icon-btn" type="button" aria-label="설정" title="설정" onClick={openSettings}>
@@ -832,7 +945,16 @@ export default function PdfWorkspace() {
         </div>
       </header>
 
-      <div className={`workspace ${pdfDoc ? "" : "empty"}`}>
+      <div
+        className={`workspace ${pdfDoc ? "" : "empty"}`}
+        ref={workspaceRef}
+        style={
+          {
+            "--thumb-width": `${thumbWidth}px`,
+            "--inspector-width": `${inspectorWidth}px`
+          } as React.CSSProperties
+        }
+      >
         {pdfDoc && (
           <aside className="thumbs">
             <h3>페이지</h3>
@@ -849,6 +971,18 @@ export default function PdfWorkspace() {
               ))}
             </div>
           </aside>
+        )}
+
+        {pdfDoc && (
+          <button
+            aria-label="페이지 목록 너비 조절"
+            className={`resize-handle left ${resizeTarget === "thumbs" ? "active" : ""}`}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setResizeTarget("thumbs");
+            }}
+            type="button"
+          />
         )}
 
         <main className="viewer">
@@ -937,6 +1071,18 @@ export default function PdfWorkspace() {
         </main>
 
         {pdfDoc && (
+          <button
+            aria-label="AI 분석 패널 너비 조절"
+            className={`resize-handle right ${resizeTarget === "inspector" ? "active" : ""}`}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setResizeTarget("inspector");
+            }}
+            type="button"
+          />
+        )}
+
+        {pdfDoc && (
           <aside className={`inspector ${inspectorOpen ? "open" : ""}`}>
             <h3>AI 분석</h3>
             <div className="hint">영역 선택을 켜고 페이지에서 분석할 부분을 드래그하세요. 잘라낸 영역이 여기에 쌓입니다.</div>
@@ -955,10 +1101,7 @@ export default function PdfWorkspace() {
                   onHover={(active) => setActiveClipId(active ? clip.id : null)}
                   onDelete={() => setClips((prev) => prev.filter((item) => item.id !== clip.id))}
                   onAnalyze={() =>
-                    startThread(
-                      clip,
-                      "이 영역의 내용을 한국어로 분석해줘. 무엇에 대한 내용인지 핵심을 2~4문장으로 요약하고, 표/차트/수식이 있다면 그 의미도 설명해줘."
-                    )
+                    startThread(clip, DEFAULT_ANALYSIS_PROMPT, { showUserTurn: false })
                   }
                   onAsk={(question) => submitFollowup(clip, question)}
                 />
@@ -1007,7 +1150,13 @@ export default function PdfWorkspace() {
                   onChange={(event) => setDraftAi((prev) => ({ ...prev, provider: event.target.value as Provider }))}
                 >
                   {Object.entries(PROVIDER_INFO).map(([provider, info]) => (
-                    <option key={provider} value={provider}>{info.label}</option>
+                    <option
+                      disabled={disabledProviders.includes(provider as Provider)}
+                      key={provider}
+                      value={provider}
+                    >
+                      {info.label}{disabledProviders.includes(provider as Provider) ? " (비활성)" : ""}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -1026,16 +1175,18 @@ export default function PdfWorkspace() {
                 <input
                   type="password"
                   value={providerHasServerKey ? "" : draftAi.key}
-                  disabled={providerHasServerKey}
+                  disabled={providerHasServerKey || currentProviderDisabled}
                   onChange={(event) => setDraftAi((prev) => ({ ...prev, key: event.target.value }))}
                   placeholder="sk-... / AIza..."
                 />
               </label>
 
               <p className="note">
-                {providerHasServerKey
-                  ? `${currentProviderInfo.keyName}가 서버에 이미 설정돼 있어요. 키를 입력하지 않아도 됩니다.`
-                  : `${currentProviderInfo.keyName}를 입력하세요. 키는 브라우저 메모리에만 보관되고 새로고침하면 사라집니다.`}
+                {currentProviderDisabled
+                  ? `${currentProviderInfo.label}는 현재 비활성화되어 있어요. OpenAI 또는 Gemini를 사용하세요.`
+                  : providerHasServerKey
+                    ? `${currentProviderInfo.keyName}가 서버에 이미 설정돼 있어요. 키를 입력하지 않아도 됩니다.`
+                    : `${currentProviderInfo.keyName}를 입력하세요. 키는 브라우저 메모리에만 보관되고 새로고침하면 사라집니다.`}
               </p>
 
               <label className="field">
@@ -1054,10 +1205,6 @@ export default function PdfWorkspace() {
                   <button className="action-btn" disabled={!pdfDoc || !fileBytes} onClick={downloadOriginal}>
                     <FileDown size={18} />
                     <span>원본 PDF</span>
-                  </button>
-                  <button className="action-btn" disabled={!pdfDoc} onClick={() => fileInputRef.current?.click()}>
-                    <Download size={18} />
-                    <span>다른 파일</span>
                   </button>
                 </div>
               </section>
@@ -1081,6 +1228,7 @@ export default function PdfWorkspace() {
               <button className="ghost" onClick={() => setSettingsOpen(false)}>취소</button>
               <button
                 className="primary"
+                disabled={currentProviderDisabled}
                 onClick={() => {
                   setAi({
                     ...draftAi,
@@ -1129,18 +1277,35 @@ function ClipCard({
       onMouseEnter={() => onHover(true)}
       onMouseLeave={() => onHover(false)}
     >
-      <img src={clip.dataUrl} alt={`p.${clip.pageNo} 선택 영역`} />
-      <div className="meta" onClick={onFocus}>
-        <span><span className="badge-num">{number}</span>p.{clip.pageNo} · {textBadge}</span>
-        <button onClick={(event) => {
-          event.stopPropagation();
-          onDelete();
-        }}>삭제</button>
+      <div className="clip-head" onClick={onFocus}>
+        <div className="clip-title">
+          <span className="badge-num">{number}</span>
+          <div>
+            <strong>p.{clip.pageNo}</strong>
+            <span>{textBadge}</span>
+          </div>
+        </div>
+        <button
+          className="clip-delete"
+          aria-label="선택 영역 삭제"
+          title="삭제"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2 size={15} />
+        </button>
       </div>
+
+      <button className="clip-preview" onClick={onFocus}>
+        <img src={clip.dataUrl} alt={`p.${clip.pageNo} 선택 영역`} />
+      </button>
 
       {!clip.started && (
         <button className="analyze-btn" disabled={clip.loading} onClick={onAnalyze}>
-          이 영역 AI로 분석하기
+          {clip.loading ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
+          <span>{clip.loading ? "분석 중" : "이 영역 분석"}</span>
         </button>
       )}
 
@@ -1166,7 +1331,10 @@ function ClipCard({
             {clip.loading && (
               <div className="turn thinking">
                 <span className="who">AI</span>
-                <div className="body">분석 중...</div>
+                <div className="thinking-row">
+                  <Loader2 className="spin" size={15} />
+                  <span>선택 영역을 읽고 있습니다</span>
+                </div>
               </div>
             )}
           </div>
@@ -1177,9 +1345,9 @@ function ClipCard({
                 이어서 받기
               </button>
             )}
-            {PRESETS.map((preset) => (
+            {PRESETS.map((preset, index) => (
               <button key={preset} disabled={clip.loading} onClick={() => onAsk(preset)}>
-                {preset.replace("해줘", "").replace("이 영역의 내용을 한국어로 ", "")}
+                {PRESET_LABELS[index]}
               </button>
             ))}
           </div>
@@ -1201,7 +1369,9 @@ function ClipCard({
               placeholder="이 영역에 대해 더 물어보기..."
               onChange={(event) => setQuestion(event.target.value)}
             />
-            <button className="send" disabled={clip.loading || !question.trim()}>↑</button>
+            <button className="send" disabled={clip.loading || !question.trim()} aria-label="질문 보내기">
+              <SendHorizontal size={17} />
+            </button>
           </form>
         </>
       )}

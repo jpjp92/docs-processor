@@ -1,6 +1,6 @@
 # Docs Processor
 
-PDF 문서를 열고 원하는 영역을 드래그로 선택한 뒤 Claude, OpenAI, Gemini로 분석할 수 있는 Next.js 기반 워크스페이스입니다.
+PDF 문서를 열고 원하는 영역을 드래그로 선택한 뒤 OpenAI 또는 Gemini로 분석할 수 있는 Next.js 기반 워크스페이스입니다.
 
 ## 주요 기능
 
@@ -55,6 +55,8 @@ GOOGLE_API_KEY=
 ```
 
 Gemini는 `GEMINI_API_KEY`를 우선 사용하고, 없으면 `GOOGLE_API_KEY`를 사용합니다.
+현재 Claude는 충전 상태 이슈로 UI와 API에서 비활성화되어 있습니다.
+기본 모델은 OpenAI `gpt-5-mini`, Gemini `gemini-2.5-flash`입니다.
 
 서버에 키가 설정되어 있으면 설정 창에서 해당 프로바이더는 서버 키가 있는 것으로 표시됩니다. 서버 키가 없을 때는 설정 창에서 사용자가 직접 API 키를 입력할 수 있습니다. 이 키는 브라우저 메모리에만 보관되며 새로고침하면 사라집니다.
 

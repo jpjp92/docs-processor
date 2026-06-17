@@ -1,4 +1,4 @@
-import { DEFAULT_MODELS, type Provider } from "@/lib/providers";
+import { DEFAULT_MODELS, DISABLED_PROVIDERS, type Provider } from "@/lib/providers";
 
 const ENV_KEYS: Partial<Record<Provider, string | undefined>> = {
   claude: process.env.ANTHROPIC_API_KEY,
@@ -9,8 +9,9 @@ const ENV_KEYS: Partial<Record<Provider, string | undefined>> = {
 export async function GET() {
   return Response.json({
     providersWithServerKey: Object.entries(ENV_KEYS)
-      .filter(([, value]) => Boolean(value?.trim()))
+      .filter(([provider, value]) => !DISABLED_PROVIDERS.includes(provider as Provider) && Boolean(value?.trim()))
       .map(([provider]) => provider),
+    disabledProviders: DISABLED_PROVIDERS,
     defaultModels: DEFAULT_MODELS
   });
 }

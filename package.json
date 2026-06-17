@@ -7,14 +7,23 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "pdf:embedded-title-lab": "node scripts/pdf-embedded-font-title-lab.mjs",
+    "pdf:edit-lab": "node scripts/pdf-text-object-lab.mjs",
+    "pdf:font-map": "node scripts/pdf-font-map-inspect.mjs",
+    "pdf:inspect": "node scripts/pdf-stream-inspect.mjs",
+    "pdf:replace-lab": "node scripts/pdf-incremental-text-replace.mjs",
+    "pdf:selection-replace-lab": "node scripts/pdf-selection-replace-lab.mjs",
+    "pdf:title-overlay-lab": "node scripts/pdf-title-overlay-lab.mjs"
   },
   "engines": {
     "node": ">=18.18"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "lucide-react": "^1.18.0",
     "next": "^15.3.3",
+    "pdf-lib": "^1.17.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

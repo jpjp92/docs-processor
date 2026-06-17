@@ -1,4 +1,4 @@
-import { callProvider, isProvider, type StandardMessage } from "@/lib/providers";
+import { callProvider, DISABLED_PROVIDERS, isProvider, type StandardMessage } from "@/lib/providers";
 
 const ENV_KEYS = {
   claude: process.env.ANTHROPIC_API_KEY,
@@ -18,6 +18,13 @@ export async function POST(request: Request) {
       return Response.json(
         { error: "provider와 messages가 필요합니다." },
         { status: 400 }
+      );
+    }
+
+    if (DISABLED_PROVIDERS.includes(body.provider)) {
+      return Response.json(
+        { error: "Claude는 현재 비활성화되어 있습니다. OpenAI 또는 Gemini를 선택하세요." },
+        { status: 403 }
       );
     }
 
