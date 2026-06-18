@@ -180,3 +180,104 @@ const ADAPTERS = {
 export function callProvider(provider: Provider, options: ProviderOptions): Promise<ProviderResult> {
   return ADAPTERS[provider](options);
 }
+
+/** SSE 응답 본문을 `data:` JSON 페이로드 단위로 순회한다. */
+async function* iterateSse(response: Response): AsyncGenerator<string> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let index: number;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload && payload !== "[DONE]") yield payload;
+    }
+  }
+}
+
+async function* streamOpenAI({ messages, model, apiKey, maxTokens }: ProviderOptions): AsyncGenerator<string> {
+  const selectedModel = model || DEFAULT_MODELS.openai;
+  const tokenLimit = maxTokens || 4096;
+  const base = {
+    model: selectedModel,
+    stream: true,
+    messages: messages.map((message) => ({
+      role: message.role,
+      content: message.content.map((part) =>
+        part.type === "image"
+          ? { type: "image_url", image_url: { url: `data:${part.mediaType};base64,${part.data}` } }
+          : { type: "text", text: part.text }
+      )
+    }))
+  };
+  const requestBody = selectedModel.startsWith("gpt-5")
+    ? { ...base, max_completion_tokens: tokenLimit }
+    : { ...base, max_tokens: tokenLimit };
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(requestBody)
+  });
+  if (!response.ok) throw new Error(`OpenAI ${response.status}: ${await response.text()}`);
+
+  for await (const payload of iterateSse(response)) {
+    try {
+      const delta = JSON.parse(payload)?.choices?.[0]?.delta?.content;
+      if (delta) yield delta as string;
+    } catch {
+      // 부분 페이로드는 건너뛴다.
+    }
+  }
+}
+
+async function* streamGemini({ messages, model, apiKey, maxTokens }: ProviderOptions): AsyncGenerator<string> {
+  const selectedModel = model || DEFAULT_MODELS.gemini;
+  const contents = messages.map((message) => ({
+    role: message.role === "assistant" ? "model" : "user",
+    parts: message.content.map((part) =>
+      part.type === "image" ? { inlineData: { mimeType: part.mediaType, data: part.data } } : { text: part.text }
+    )
+  }));
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:streamGenerateContent?alt=sse&key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: maxTokens || 4096 } })
+    }
+  );
+  if (!response.ok) throw new Error(`Gemini ${response.status}: ${await response.text()}`);
+
+  for await (const payload of iterateSse(response)) {
+    try {
+      const parts = JSON.parse(payload)?.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (part?.text) yield part.text as string;
+      }
+    } catch {
+      // 부분 페이로드는 건너뛴다.
+    }
+  }
+}
+
+const STREAM_ADAPTERS: Partial<Record<Provider, (options: ProviderOptions) => AsyncGenerator<string>>> = {
+  openai: streamOpenAI,
+  gemini: streamGemini
+};
+
+export function streamProvider(provider: Provider, options: ProviderOptions): AsyncGenerator<string> {
+  const adapter = STREAM_ADAPTERS[provider];
+  if (!adapter) throw new Error(`${provider}는 스트리밍을 지원하지 않습니다.`);
+  return adapter(options);
+}

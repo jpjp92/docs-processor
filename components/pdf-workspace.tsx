@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { parseSummary, type SummarySection } from "@/lib/summarize";
+
 type Provider = "claude" | "openai" | "gemini";
 
 type TextPart = { type: "text"; text: string };
@@ -293,6 +295,13 @@ export default function PdfWorkspace() {
   const [inspectorWidth, setInspectorWidth] = useState(340);
   const [resizeTarget, setResizeTarget] = useState<"thumbs" | "inspector" | null>(null);
   const [error, setError] = useState("");
+  const [summary, setSummary] = useState<{
+    loading: boolean;
+    overview: string;
+    sections: SummarySection[];
+    error: string;
+    done: boolean;
+  }>({ done: false, error: "", loading: false, overview: "", sections: [] });
 
   const totalPages = pdfDoc?.numPages || 0;
   const currentProviderInfo = PROVIDER_INFO[draftAi.provider];
@@ -444,6 +453,7 @@ export default function PdfWorkspace() {
     setCurrentPage(1);
     setClips([]);
     setThumbs([]);
+    setSummary({ done: false, error: "", loading: false, overview: "", sections: [] });
     await buildThumbs(doc);
   }
 
@@ -461,6 +471,79 @@ export default function PdfWorkspace() {
       result.push({ page: pageNumber, url: canvas.toDataURL("image/png") });
     }
     setThumbs(result);
+  }
+
+  async function collectAllText(doc: PdfDocument): Promise<string> {
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+      const page = await doc.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const text = content.items
+        .map((item) => item.str || "")
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) pages.push(text);
+    }
+    return pages.join("\n\n");
+  }
+
+  async function runSummary() {
+    if (!pdfDoc) return;
+    setSummary({ done: false, error: "", loading: true, overview: "", sections: [] });
+    try {
+      const text = await collectAllText(pdfDoc);
+      if (!text.trim()) {
+        setSummary((prev) => ({
+          ...prev,
+          loading: false,
+          error: "본문 텍스트를 추출할 수 없습니다. 스캔 이미지 PDF일 수 있어요."
+        }));
+        return;
+      }
+
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (ai.key) headers["x-provider-key"] = ai.key;
+      // 요약은 서버에서 Gemini Flash를 기본으로 쓴다. 비활성 프로바이더면 provider를 비워 서버 기본값에 맡긴다.
+      const provider = disabledProviders.includes(ai.provider) ? undefined : ai.provider;
+
+      const response = await fetch(`${ai.backend}/api/summarize`, {
+        body: JSON.stringify({ model: provider ? ai.model || undefined : undefined, provider, text }),
+        headers,
+        method: "POST"
+      });
+
+      if (!response.ok || !response.body) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let raw = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        raw += decoder.decode(value, { stream: true });
+        const parsed = parseSummary(raw);
+        setSummary((prev) => ({ ...prev, overview: parsed.overview, sections: parsed.sections }));
+      }
+
+      const finalParsed = parseSummary(raw);
+      setSummary((prev) => ({
+        ...prev,
+        done: true,
+        loading: false,
+        overview: finalParsed.overview,
+        sections: finalParsed.sections
+      }));
+    } catch (summaryError) {
+      setSummary((prev) => ({
+        ...prev,
+        loading: false,
+        error: summaryError instanceof Error ? summaryError.message : "요약에 실패했습니다."
+      }));
+    }
   }
 
   function downloadOriginal() {
@@ -486,6 +569,7 @@ export default function PdfWorkspace() {
     setFileUrl("");
     setThumbs([]);
     setClips([]);
+    setSummary({ done: false, error: "", loading: false, overview: "", sections: [] });
     setSelecting(false);
     setActiveClipId(null);
     setInspectorOpen(false);
@@ -513,6 +597,10 @@ export default function PdfWorkspace() {
         provider: ai.provider,
         model: ai.model || PROVIDER_INFO[ai.provider].model
       },
+      summary:
+        summary.overview || summary.sections.length > 0
+          ? { overview: summary.overview, sections: summary.sections }
+          : null,
       clips: clips
         .slice()
         .reverse()
@@ -537,6 +625,25 @@ export default function PdfWorkspace() {
 
   function downloadAnalysisHtml() {
     const payload = buildAnalysisExport();
+    const summaryHtml = payload.summary
+      ? `
+        <section class="summary">
+          <div class="eyebrow">Document Summary</div>
+          ${payload.summary.overview ? `<p class="summary-lead">${escapeHtml(payload.summary.overview)}</p>` : ""}
+          ${
+            payload.summary.sections.length
+              ? `<ul class="summary-list">${payload.summary.sections
+                  .map(
+                    (section) =>
+                      `<li><span class="st">${escapeHtml(section.title)}</span><span class="sp">${escapeHtml(
+                        section.point
+                      )}</span></li>`
+                  )
+                  .join("")}</ul>`
+              : ""
+          }
+        </section>`
+      : "";
     const clipHtml = payload.clips.length
       ? payload.clips
           .map(
@@ -596,6 +703,12 @@ export default function PdfWorkspace() {
     .eyebrow { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
     h1 { font-size:32px; line-height:1.2; margin:8px 0 10px; }
     .meta { color:var(--muted); display:flex; flex-wrap:wrap; gap:12px; font-size:14px; }
+    .summary { background:#fff; border:1px solid var(--line); border-radius:8px; margin-bottom:24px; padding:22px 24px; }
+    .summary-lead { border-left:3px solid var(--accent); font-size:17px; font-weight:600; line-height:1.5; margin:10px 0 0; padding-left:14px; }
+    .summary-list { border-top:1px solid var(--line); display:grid; gap:14px; list-style:none; margin:18px 0 0; padding:18px 0 0; }
+    .summary-list li { display:grid; gap:3px; }
+    .summary-list .st { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.04em; }
+    .summary-list .sp { color:var(--ink); font-size:14px; line-height:1.5; }
     .clip { background:#fff; border:1px solid var(--line); border-radius:8px; margin-top:20px; overflow:hidden; }
     .clip header { align-items:center; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; padding:14px 18px; }
     .clip header span { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
@@ -627,6 +740,7 @@ export default function PdfWorkspace() {
         <span>${payload.clips.length} selections</span>
       </div>
     </section>
+    ${summaryHtml}
     ${clipHtml}
   </main>
 </body>
@@ -928,7 +1042,7 @@ export default function PdfWorkspace() {
         <div className="topbar-left">
           <div className="brand">
             <span className="dot" />
-            Docent <small>PDF workspace</small>
+            Verso <small>read, mark, understand</small>
           </div>
         </div>
         <div className="doc-name">{fileName}</div>
@@ -1084,6 +1198,46 @@ export default function PdfWorkspace() {
 
         {pdfDoc && (
           <aside className={`inspector ${inspectorOpen ? "open" : ""}`}>
+            <div className="doc-summary">
+              <div className="doc-summary-head">
+                <h3>문서 전체 요약</h3>
+                <button
+                  type="button"
+                  className="summary-run"
+                  onClick={() => void runSummary()}
+                  disabled={summary.loading || !pdfDoc}
+                >
+                  {summary.loading ? (
+                    <>
+                      <Loader2 size={14} className="spin" /> 요약 중…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles size={14} /> 요약 생성
+                    </>
+                  )}
+                </button>
+              </div>
+              {summary.error && <div className="summary-error">{summary.error}</div>}
+              {(summary.overview || summary.sections.length > 0) && (
+                <div className="summary-card">
+                  {summary.overview && <p className="summary-overview">{summary.overview}</p>}
+                  {summary.sections.length > 0 && (
+                    <ul className="summary-sections">
+                      {summary.sections.map((section, index) => (
+                        <li key={index}>
+                          <span className="sec-title">{section.title}</span>
+                          <span className="sec-point">{section.point}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+              {!summary.loading && !summary.error && !summary.overview && summary.sections.length === 0 && (
+                <div className="hint">문서 전체를 한 줄 개요와 섹션별 핵심(최대 10개)으로 요약합니다.</div>
+              )}
+            </div>
             <h3>AI 분석</h3>
             <div className="hint">영역 선택을 켜고 페이지에서 분석할 부분을 드래그하세요. 잘라낸 영역이 여기에 쌓입니다.</div>
             <div className="clip-list">

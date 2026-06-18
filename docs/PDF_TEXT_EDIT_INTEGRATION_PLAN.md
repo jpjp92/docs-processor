@@ -64,6 +64,36 @@ Missing glyph(s) in /F2: 테, 스, 트, 중, 입
 - 같은 글리프 수라도 기존 폰트에 없는 글자는 직접 치환할 수 없다.
 - 이 경우 embedded font overlay 방식으로 분기해야 한다.
 
+## Main App Integration Status
+
+현재 메인 프로젝트에 1차 베타 기능을 적용했다.
+
+추가된 파일:
+
+- `lib/pdf-edit/selection-replace.ts`
+- `app/api/pdf-edit/inspect/route.ts`
+- `app/api/pdf-edit/replace/route.ts`
+
+수정된 파일:
+
+- `components/pdf-workspace.tsx`
+- `app/globals.css`
+
+적용 범위:
+
+- 오른쪽 패널 상단에 `PDF 텍스트 치환 실험` 패널 추가
+- 현재 페이지의 반복 text run 후보 찾기
+- 후보 선택
+- 새 텍스트 입력
+- 글리프 수 일치 여부 표시
+- 서버 API를 통한 수정 PDF 다운로드
+
+아직 적용하지 않은 범위:
+
+- 드래그한 선택 영역 좌표 기반 후보 필터링
+- 기존 폰트에 없는 글자에 대한 embedded font overlay fallback
+- 수정된 PDF를 현재 뷰어에 즉시 다시 로드하는 흐름
+
 ## Product Scope
 
 초기 기능명:
@@ -164,7 +194,7 @@ lib/pdf-edit/selection-replace.ts
 }
 ```
 
-#### `POST /api/pdf-edit/replace`
+#### `POST /api/pdf-edit/apply`
 
 입력:
 
@@ -334,6 +364,11 @@ npm run build
 - 기존 CLI 명령이 동일하게 동작
 - lint/type/build 통과
 
+상태:
+
+- `lib/pdf-edit/selection-replace.ts`로 서버용 핵심 로직 분리 완료
+- CLI 스크립트는 아직 기존 독립 구현 유지
+
 ### Phase 2. Inspect API
 
 - PDF 업로드를 받아 후보 text run 반환
@@ -344,6 +379,11 @@ npm run build
 
 - 테스트 PDF에서 11개 후보 반환
 - 실패 PDF에서 명확한 에러 반환
+
+상태:
+
+- `POST /api/pdf-edit/inspect` 추가 완료
+- 테스트 PDF 1페이지에서 11개 후보 반환 확인
 
 ### Phase 3. Replace API
 
@@ -356,6 +396,12 @@ npm run build
 - `인공지능 ` -> `공공지능 ` 치환 PDF 반환
 - `테스트중입 ` 요청 시 `MISSING_GLYPH` 반환
 
+상태:
+
+- `POST /api/pdf-edit/replace` 추가 완료
+- 공백 없는 후보 `파악` -> `수요` HTTP 200 및 PDF 반환 확인
+- `테스트중입 ` 요청은 현재 curl 테스트에서 trailing space 전달 한계 때문에 `GLYPH_COUNT_MISMATCH` 확인
+
 ### Phase 4. UI integration
 
 - PDF workspace에 `텍스트 수정 실험` 토글 추가
@@ -367,6 +413,11 @@ npm run build
 
 - 기존 분석 플로우와 충돌 없음
 - 데스크톱/모바일 레이아웃이 깨지지 않음
+
+상태:
+
+- 오른쪽 패널에 베타 UI 적용 완료
+- 현재 페이지 후보 찾기와 수정 PDF 다운로드 연결 완료
 
 ### Phase 5. Overlay fallback
 
