@@ -1,265 +1,18 @@
 "use client";
 
-import {
-  Braces,
-  FileCode2,
-  FileDown,
-  FilePlus2,
-  Loader2,
-  SendHorizontal,
-  Settings,
-  Sparkles,
-  Trash2,
-  X
-} from "lucide-react";
+import { FilePlus2, Settings } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { parseSummary, type SummarySection } from "@/lib/summarize";
-
-type Provider = "claude" | "openai" | "gemini";
-
-type TextPart = { type: "text"; text: string };
-type ImagePart = { type: "image"; mediaType: string; data: string };
-type MessagePart = TextPart | ImagePart;
-type Message = { role: "user" | "assistant"; content: MessagePart[] };
-
-type Clip = {
-  id: number;
-  pageNo: number;
-  dataUrl: string;
-  extractedText: string;
-  rect: { x: number; y: number; w: number; h: number };
-  ratios: { x: number; y: number; w: number; h: number };
-  messages: Message[];
-  turns: {
-    role: "user" | "assistant" | "error";
-    text: string;
-    finishReason?: string;
-    truncated?: boolean;
-  }[];
-  started: boolean;
-  loading: boolean;
-};
-
-type PdfPage = {
-  getViewport(input: { scale: number }): { width: number; height: number; transform: number[] };
-  render(input: {
-    canvasContext: CanvasRenderingContext2D;
-    viewport: unknown;
-    transform?: number[];
-  }): { promise: Promise<void> };
-  getTextContent(): Promise<{ items: Array<{ str?: string; width: number; height: number; transform: number[] }> }>;
-};
-
-type PdfDocument = {
-  numPages: number;
-  getPage(pageNumber: number): Promise<PdfPage>;
-};
-
-type PdfJsLib = {
-  GlobalWorkerOptions: { workerSrc: string };
-  getDocument(input: { data: ArrayBuffer }): { promise: Promise<PdfDocument> };
-  Util: { transform(a: number[], b: number[]): number[] };
-};
-
-declare global {
-  interface Window {
-    pdfjsLib?: PdfJsLib;
-  }
-}
-
-const PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-const PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-
-const PROVIDER_INFO: Record<Provider, { label: string; keyName: string; model: string; url: string }> = {
-  claude: {
-    label: "Claude (Anthropic)",
-    keyName: "Anthropic API 키",
-    model: "claude-sonnet-4-6",
-    url: "console.anthropic.com"
-  },
-  openai: {
-    label: "GPT (OpenAI)",
-    keyName: "OpenAI API 키",
-    model: "gpt-5-mini",
-    url: "platform.openai.com"
-  },
-  gemini: {
-    label: "Gemini (Google)",
-    keyName: "Google AI Studio 키",
-    model: "gemini-2.5-flash",
-    url: "aistudio.google.com"
-  }
-};
-
-const FALLBACK_PROVIDER: Provider = "openai";
-const LOCAL_DISABLED_PROVIDERS: Provider[] = ["claude"];
-
-const PRESETS = [
-  "아래 형식으로 짧게 요약해줘.\n\n## 한줄 요약\n> 핵심 결론 1문장\n\n## 핵심 포인트\n- 포인트 1\n- 포인트 2\n- 포인트 3\n\n## 숫자/차트 의미\n- 중요한 수치나 비교가 있으면 2개 이내로 설명\n\n각 항목은 간결하게 작성해줘.",
-  "이 영역의 내용을 한국어로 번역해줘. 원문 구조를 유지하고, 표나 항목은 마크다운 목록으로 정리해줘.",
-  "표나 데이터가 있으면 마크다운 표로 정리해줘. 표 아래에는 '읽는 법' 섹션을 만들고 핵심 해석을 불릿 3개 이내로 덧붙여줘.",
-  "핵심을 아래 형식으로 불릿 3개로 정리해줘.\n\n## 핵심 3가지\n- **무엇:**\n- **왜 중요:**\n- **봐야 할 숫자:**"
-];
-
-const PRESET_LABELS = ["요약", "번역", "표 정리", "핵심 3가지"];
-
-const DEFAULT_ANALYSIS_PROMPT = `이 영역의 내용을 한국어로 분석해줘.
-
-반드시 아래 형식으로 답해줘.
-
-## 한줄 요약
-> 이 영역이 말하는 핵심을 1문장으로 작성
-
-## 핵심 포인트
-- 가장 중요한 내용
-- 근거가 되는 수치/대상/비교
-- 사용자가 기억해야 할 의미
-
-## 세부 의미
-- 표/차트/수식이 있으면 무엇을 비교하는지 설명
-- 눈에 띄는 숫자는 2~4개만 골라 의미를 설명
-
-## 다음에 볼 것
-- 이어서 확인하면 좋은 질문 1개
-
-규칙:
-- 장문 문단보다 짧은 문장과 불릿을 우선해줘.
-- 보이지 않는 내용은 추측하지 말고 '이미지에서 확인되지 않음'이라고 써줘.
-- 마크다운만 사용하고 머리말은 쓰지 마.`;
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function renderMarkdown(source: string) {
-  const inline = (value: string) =>
-    escapeHtml(value)
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  const lines = source.split("\n");
-  let html = "";
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    if (/\|/.test(line) && /^\s*\|?[-: |]+\|?\s*$/.test(lines[i + 1] || "")) {
-      const head = line.split("|").map((cell) => cell.trim()).filter(Boolean);
-      i += 2;
-      const rows: string[][] = [];
-      while (i < lines.length && /\|/.test(lines[i])) {
-        rows.push(lines[i].split("|").map((cell) => cell.trim()).filter(Boolean));
-        i += 1;
-      }
-      html += `<table><thead><tr>${head.map((cell) => `<th>${inline(cell)}</th>`).join("")}</tr></thead>`;
-      html += `<tbody>${rows
-        .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`)
-        .join("")}</tbody></table>`;
-      continue;
-    }
-
-    const heading = line.match(/^(#{1,3})\s+(.*)/);
-    if (heading) {
-      const level = heading[1].length + 2;
-      html += `<h${level}>${inline(heading[2])}</h${level}>`;
-      i += 1;
-      continue;
-    }
-
-    if (/^\s*>\s+/.test(line)) {
-      html += "<blockquote>";
-      while (i < lines.length && /^\s*>\s+/.test(lines[i])) {
-        html += `<p>${inline(lines[i].replace(/^\s*>\s+/, ""))}</p>`;
-        i += 1;
-      }
-      html += "</blockquote>";
-      continue;
-    }
-
-    if (/^\s*---+\s*$/.test(line)) {
-      html += "<hr />";
-      i += 1;
-      continue;
-    }
-
-    if (/^\s*[-*]\s+/.test(line)) {
-      html += "<ul>";
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        html += `<li>${inline(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`;
-        i += 1;
-      }
-      html += "</ul>";
-      continue;
-    }
-
-    if (/^\s*\d+\.\s+/.test(line)) {
-      html += "<ol>";
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        html += `<li>${inline(lines[i].replace(/^\s*\d+\.\s+/, ""))}</li>`;
-        i += 1;
-      }
-      html += "</ol>";
-      continue;
-    }
-
-    if (line.trim()) {
-      html += `<p>${inline(line)}</p>`;
-    }
-    i += 1;
-  }
-
-  return html;
-}
-
-function downloadTextFile(fileName: string, contents: string, type: string) {
-  const url = URL.createObjectURL(new Blob([contents], { type }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.rel = "noopener";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 4000);
-}
-
-function safeFileStem(value: string) {
-  return (value || "analysis")
-    .replace(/\.[^.]+$/, "")
-    .replace(/[^\w가-힣.-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "") || "analysis";
-}
-
-function loadPdfJs(): Promise<PdfJsLib> {
-  if (window.pdfjsLib) {
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-    return Promise.resolve(window.pdfjsLib);
-  }
-
-  return new Promise<PdfJsLib>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(`script[src="${PDFJS_URL}"]`);
-    const script = existing || document.createElement("script");
-    script.src = PDFJS_URL;
-    script.async = true;
-    script.onload = () => {
-      if (!window.pdfjsLib) {
-        reject(new Error("pdf.js를 불러오지 못했습니다."));
-        return;
-      }
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-      resolve(window.pdfjsLib);
-    };
-    script.onerror = () => reject(new Error("pdf.js 스크립트 로딩에 실패했습니다."));
-    if (!existing) document.head.appendChild(script);
-  });
-}
+import ClipCard from "@/components/clip-card";
+import DocSummaryPanel from "@/components/doc-summary-panel";
+import SettingsModal from "@/components/settings-modal";
+import { useAiSettings } from "@/hooks/use-ai-settings";
+import { useSummary } from "@/hooks/use-summary";
+import { DEFAULT_ANALYSIS_PROMPT, PROVIDER_INFO } from "@/lib/pdf-workspace/constants";
+import { downloadTextFile, safeFileStem } from "@/lib/pdf-workspace/format";
+import { loadPdfJs } from "@/lib/pdf-workspace/pdfjs";
+import { buildReportHtml } from "@/lib/pdf-workspace/report";
+import type { AnalysisExport, Clip, MessagePart, PdfDocument, PdfPage } from "@/lib/pdf-workspace/types";
 
 export default function PdfWorkspace() {
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -282,11 +35,6 @@ export default function PdfWorkspace() {
   const [selecting, setSelecting] = useState(false);
   const [activeClipId, setActiveClipId] = useState<number | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [serverKeyProviders, setServerKeyProviders] = useState<Provider[]>([]);
-  const [disabledProviders, setDisabledProviders] = useState<Provider[]>(LOCAL_DISABLED_PROVIDERS);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [ai, setAi] = useState({ backend: "", provider: FALLBACK_PROVIDER, model: "", key: "" });
-  const [draftAi, setDraftAi] = useState(ai);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
   const [currentPageProxy, setCurrentPageProxy] = useState<PdfPage | null>(null);
   const [currentViewport, setCurrentViewport] = useState<{ transform: number[] } | null>(null);
@@ -295,18 +43,20 @@ export default function PdfWorkspace() {
   const [inspectorWidth, setInspectorWidth] = useState(340);
   const [resizeTarget, setResizeTarget] = useState<"thumbs" | "inspector" | null>(null);
   const [error, setError] = useState("");
-  const [summary, setSummary] = useState<{
-    loading: boolean;
-    overview: string;
-    sections: SummarySection[];
-    error: string;
-    done: boolean;
-  }>({ done: false, error: "", loading: false, overview: "", sections: [] });
 
   const totalPages = pdfDoc?.numPages || 0;
-  const currentProviderInfo = PROVIDER_INFO[draftAi.provider];
-  const currentProviderDisabled = disabledProviders.includes(draftAi.provider);
-  const providerHasServerKey = serverKeyProviders.includes(draftAi.provider);
+  const {
+    ai,
+    draftAi,
+    setDraftAi,
+    serverKeyProviders,
+    disabledProviders,
+    settingsOpen,
+    openSettings,
+    saveSettings,
+    closeSettings
+  } = useAiSettings();
+  const { summary, runSummary, resetSummary } = useSummary({ ai, disabledProviders, pdfDoc });
 
   const visibleClips = useMemo(
     () => clips.filter((clip) => clip.pageNo === currentPage),
@@ -453,7 +203,7 @@ export default function PdfWorkspace() {
     setCurrentPage(1);
     setClips([]);
     setThumbs([]);
-    setSummary({ done: false, error: "", loading: false, overview: "", sections: [] });
+    resetSummary();
     await buildThumbs(doc);
   }
 
@@ -471,79 +221,6 @@ export default function PdfWorkspace() {
       result.push({ page: pageNumber, url: canvas.toDataURL("image/png") });
     }
     setThumbs(result);
-  }
-
-  async function collectAllText(doc: PdfDocument): Promise<string> {
-    const pages: string[] = [];
-    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
-      const page = await doc.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const text = content.items
-        .map((item) => item.str || "")
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (text) pages.push(text);
-    }
-    return pages.join("\n\n");
-  }
-
-  async function runSummary() {
-    if (!pdfDoc) return;
-    setSummary({ done: false, error: "", loading: true, overview: "", sections: [] });
-    try {
-      const text = await collectAllText(pdfDoc);
-      if (!text.trim()) {
-        setSummary((prev) => ({
-          ...prev,
-          loading: false,
-          error: "본문 텍스트를 추출할 수 없습니다. 스캔 이미지 PDF일 수 있어요."
-        }));
-        return;
-      }
-
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (ai.key) headers["x-provider-key"] = ai.key;
-      // 요약은 서버에서 Gemini Flash를 기본으로 쓴다. 비활성 프로바이더면 provider를 비워 서버 기본값에 맡긴다.
-      const provider = disabledProviders.includes(ai.provider) ? undefined : ai.provider;
-
-      const response = await fetch(`${ai.backend}/api/summarize`, {
-        body: JSON.stringify({ model: provider ? ai.model || undefined : undefined, provider, text }),
-        headers,
-        method: "POST"
-      });
-
-      if (!response.ok || !response.body) {
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(data.error || `HTTP ${response.status}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        raw += decoder.decode(value, { stream: true });
-        const parsed = parseSummary(raw);
-        setSummary((prev) => ({ ...prev, overview: parsed.overview, sections: parsed.sections }));
-      }
-
-      const finalParsed = parseSummary(raw);
-      setSummary((prev) => ({
-        ...prev,
-        done: true,
-        loading: false,
-        overview: finalParsed.overview,
-        sections: finalParsed.sections
-      }));
-    } catch (summaryError) {
-      setSummary((prev) => ({
-        ...prev,
-        loading: false,
-        error: summaryError instanceof Error ? summaryError.message : "요약에 실패했습니다."
-      }));
-    }
   }
 
   function downloadOriginal() {
@@ -569,7 +246,7 @@ export default function PdfWorkspace() {
     setFileUrl("");
     setThumbs([]);
     setClips([]);
-    setSummary({ done: false, error: "", loading: false, overview: "", sections: [] });
+    resetSummary();
     setSelecting(false);
     setActiveClipId(null);
     setInspectorOpen(false);
@@ -577,7 +254,7 @@ export default function PdfWorkspace() {
     setCurrentViewport(null);
     setPageSize({ width: 0, height: 0 });
     setDrag(null);
-    setSettingsOpen(false);
+    closeSettings();
     pendingScrollRatioRef.current = null;
     if (canvasRef.current) {
       const context = canvasRef.current.getContext("2d");
@@ -586,7 +263,7 @@ export default function PdfWorkspace() {
     if (textLayerRef.current) textLayerRef.current.innerHTML = "";
   }
 
-  function buildAnalysisExport() {
+  function buildAnalysisExport(): AnalysisExport {
     return {
       document: {
         fileName: fileName || null,
@@ -624,128 +301,7 @@ export default function PdfWorkspace() {
   }
 
   function downloadAnalysisHtml() {
-    const payload = buildAnalysisExport();
-    const summaryHtml = payload.summary
-      ? `
-        <section class="summary">
-          <div class="eyebrow">Document Summary</div>
-          ${payload.summary.overview ? `<p class="summary-lead">${escapeHtml(payload.summary.overview)}</p>` : ""}
-          ${
-            payload.summary.sections.length
-              ? `<ul class="summary-list">${payload.summary.sections
-                  .map(
-                    (section) =>
-                      `<li><span class="st">${escapeHtml(section.title)}</span><span class="sp">${escapeHtml(
-                        section.point
-                      )}</span></li>`
-                  )
-                  .join("")}</ul>`
-              : ""
-          }
-        </section>`
-      : "";
-    const clipHtml = payload.clips.length
-      ? payload.clips
-          .map(
-            (clip) => `
-              <article class="clip">
-                <header>
-                  <span>Selection ${clip.id}</span>
-                  <strong>Page ${clip.pageNo}</strong>
-                </header>
-                <img src="${clip.image}" alt="Page ${clip.pageNo} selected area" />
-                ${
-                  clip.extractedText
-                    ? `<section><h2>Extracted Text</h2><pre>${escapeHtml(clip.extractedText)}</pre></section>`
-                    : `<p class="muted">No text layer was extracted from this selection.</p>`
-                }
-                <section>
-                  <h2>Analysis</h2>
-                  ${
-                    clip.turns.length
-                      ? clip.turns
-                          .map(
-                            (turn) => `
-                              <div class="turn ${turn.role}">
-                                <b>${turn.role === "user" ? "Question" : turn.role === "assistant" ? "Answer" : "Status"}</b>
-                                ${
-                                  turn.truncated
-                                    ? `<p class="warning">This response may be incomplete because the model stopped at its output limit${
-                                        turn.finishReason ? ` (${escapeHtml(turn.finishReason)})` : ""
-                                      }.</p>`
-                                    : ""
-                                }
-                                <div>${turn.role === "assistant" ? renderMarkdown(turn.text) : `<p>${escapeHtml(turn.text)}</p>`}</div>
-                              </div>
-                            `
-                          )
-                          .join("")
-                      : `<p class="muted">No analysis has been generated for this selection yet.</p>`
-                  }
-                </section>
-              </article>
-            `
-          )
-          .join("")
-      : `<p class="empty-report">No selected areas or analysis results were exported.</p>`;
-
-    const html = `<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(fileName || "Analysis Report")}</title>
-  <style>
-    :root { color-scheme: light; --ink:#1c2230; --muted:#687083; --line:#e6e2d8; --paper:#f7f5ef; --accent:#3552e0; }
-    body { margin:0; background:var(--paper); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.65; }
-    main { max-width:980px; margin:0 auto; padding:48px 24px 72px; }
-    .hero { margin-bottom:28px; }
-    .eyebrow { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
-    h1 { font-size:32px; line-height:1.2; margin:8px 0 10px; }
-    .meta { color:var(--muted); display:flex; flex-wrap:wrap; gap:12px; font-size:14px; }
-    .summary { background:#fff; border:1px solid var(--line); border-radius:8px; margin-bottom:24px; padding:22px 24px; }
-    .summary-lead { border-left:3px solid var(--accent); font-size:17px; font-weight:600; line-height:1.5; margin:10px 0 0; padding-left:14px; }
-    .summary-list { border-top:1px solid var(--line); display:grid; gap:14px; list-style:none; margin:18px 0 0; padding:18px 0 0; }
-    .summary-list li { display:grid; gap:3px; }
-    .summary-list .st { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.04em; }
-    .summary-list .sp { color:var(--ink); font-size:14px; line-height:1.5; }
-    .clip { background:#fff; border:1px solid var(--line); border-radius:8px; margin-top:20px; overflow:hidden; }
-    .clip header { align-items:center; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; padding:14px 18px; }
-    .clip header span { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
-    .clip img { border-bottom:1px solid var(--line); display:block; max-width:100%; width:100%; }
-    section { padding:18px; }
-    h2 { font-size:15px; margin:0 0 10px; }
-    pre { background:#f8f8f8; border:1px solid var(--line); border-radius:6px; overflow:auto; padding:12px; white-space:pre-wrap; }
-    .turn { border-top:1px solid var(--line); padding:14px 0; }
-    .turn:first-child { border-top:0; }
-    .turn b { color:var(--accent); display:block; font-size:12px; margin-bottom:6px; text-transform:uppercase; }
-    .turn.user b { color:#5a6275; }
-    .turn.error { color:#b42318; }
-    .warning { background:#fff7ed; border:1px solid #fed7aa; border-radius:6px; color:#9a3412; margin:0 0 10px; padding:9px 10px; }
-    .muted, .empty-report { color:var(--muted); }
-    table { border-collapse:collapse; width:100%; }
-    th, td { border:1px solid var(--line); padding:6px 8px; text-align:left; }
-    code { background:#f0efe9; border-radius:4px; padding:1px 5px; }
-  </style>
-</head>
-<body>
-  <main>
-    <section class="hero">
-      <div class="eyebrow">PDF Analysis Report</div>
-      <h1>${escapeHtml(fileName || "Untitled document")}</h1>
-      <div class="meta">
-        <span>Exported ${new Date(payload.document.exportedAt).toLocaleString()}</span>
-        <span>${escapeHtml(PROVIDER_INFO[payload.ai.provider].label)}</span>
-        <span>${escapeHtml(payload.ai.model)}</span>
-        <span>${payload.clips.length} selections</span>
-      </div>
-    </section>
-    ${summaryHtml}
-    ${clipHtml}
-  </main>
-</body>
-</html>`;
-
+    const html = buildReportHtml(buildAnalysisExport());
     downloadTextFile(`${safeFileStem(fileName)}-analysis.html`, html, "text/html;charset=utf-8");
   }
 
@@ -832,28 +388,6 @@ export default function PdfWorkspace() {
     setInspectorOpen(true);
   }
 
-  async function openSettings() {
-    let nextDisabledProviders = disabledProviders;
-    try {
-      const response = await fetch(`${ai.backend}/api/config`);
-      if (response.ok) {
-        const config = (await response.json()) as {
-          disabledProviders?: Provider[];
-          providersWithServerKey?: Provider[];
-        };
-        setServerKeyProviders(config.providersWithServerKey || []);
-        nextDisabledProviders = config.disabledProviders || LOCAL_DISABLED_PROVIDERS;
-        setDisabledProviders(nextDisabledProviders);
-      }
-    } catch {
-      setServerKeyProviders([]);
-      nextDisabledProviders = LOCAL_DISABLED_PROVIDERS;
-      setDisabledProviders(nextDisabledProviders);
-    }
-    setDraftAi(nextDisabledProviders.includes(ai.provider) ? { ...ai, provider: FALLBACK_PROVIDER, key: "" } : ai);
-    setSettingsOpen(true);
-  }
-
   async function exchange(
     clipId: number,
     displayText: string,
@@ -887,7 +421,7 @@ export default function PdfWorkspace() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (ai.key) headers["x-provider-key"] = ai.key;
 
-      const response = await fetch(`${ai.backend}/api/analyze`, {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -1198,46 +732,7 @@ export default function PdfWorkspace() {
 
         {pdfDoc && (
           <aside className={`inspector ${inspectorOpen ? "open" : ""}`}>
-            <div className="doc-summary">
-              <div className="doc-summary-head">
-                <h3>문서 전체 요약</h3>
-                <button
-                  type="button"
-                  className="summary-run"
-                  onClick={() => void runSummary()}
-                  disabled={summary.loading || !pdfDoc}
-                >
-                  {summary.loading ? (
-                    <>
-                      <Loader2 size={14} className="spin" /> 요약 중…
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles size={14} /> 요약 생성
-                    </>
-                  )}
-                </button>
-              </div>
-              {summary.error && <div className="summary-error">{summary.error}</div>}
-              {(summary.overview || summary.sections.length > 0) && (
-                <div className="summary-card">
-                  {summary.overview && <p className="summary-overview">{summary.overview}</p>}
-                  {summary.sections.length > 0 && (
-                    <ul className="summary-sections">
-                      {summary.sections.map((section, index) => (
-                        <li key={index}>
-                          <span className="sec-title">{section.title}</span>
-                          <span className="sec-point">{section.point}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-              {!summary.loading && !summary.error && !summary.overview && summary.sections.length === 0 && (
-                <div className="hint">문서 전체를 한 줄 개요와 섹션별 핵심(최대 10개)으로 요약합니다.</div>
-              )}
-            </div>
+            <DocSummaryPanel summary={summary} onRun={() => void runSummary()} canRun={!!pdfDoc} />
             <h3>AI 분석</h3>
             <div className="hint">영역 선택을 켜고 페이지에서 분석할 부분을 드래그하세요. 잘라낸 영역이 여기에 쌓입니다.</div>
             <div className="clip-list">
@@ -1284,251 +779,22 @@ export default function PdfWorkspace() {
       )}
 
       {settingsOpen && (
-        <div className="modal-backdrop" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setSettingsOpen(false);
-        }}>
-          <div className="modal">
-            <div className="modal-head">
-              <h2>설정</h2>
-              <button className="x" aria-label="설정 닫기" onClick={() => setSettingsOpen(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="modal-body">
-              <section className="settings-section">
-                <h3>AI 설정</h3>
-              <label className="field">
-                <span>AI 프로바이더</span>
-                <select
-                  value={draftAi.provider}
-                  onChange={(event) => setDraftAi((prev) => ({ ...prev, provider: event.target.value as Provider }))}
-                >
-                  {Object.entries(PROVIDER_INFO).map(([provider, info]) => (
-                    <option
-                      disabled={disabledProviders.includes(provider as Provider)}
-                      key={provider}
-                      value={provider}
-                    >
-                      {info.label}{disabledProviders.includes(provider as Provider) ? " (비활성)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field">
-                <span>모델 <em>(비워두면 기본값)</em></span>
-                <input
-                  value={draftAi.model}
-                  onChange={(event) => setDraftAi((prev) => ({ ...prev, model: event.target.value }))}
-                  placeholder={`예: ${currentProviderInfo.model}`}
-                />
-              </label>
-
-              <label className="field">
-                <span>API 키 <em>{providerHasServerKey ? "(서버에 설정됨)" : ""}</em></span>
-                <input
-                  type="password"
-                  value={providerHasServerKey ? "" : draftAi.key}
-                  disabled={providerHasServerKey || currentProviderDisabled}
-                  onChange={(event) => setDraftAi((prev) => ({ ...prev, key: event.target.value }))}
-                  placeholder="sk-... / AIza..."
-                />
-              </label>
-
-              <p className="note">
-                {currentProviderDisabled
-                  ? `${currentProviderInfo.label}는 현재 비활성화되어 있어요. OpenAI 또는 Gemini를 사용하세요.`
-                  : providerHasServerKey
-                    ? `${currentProviderInfo.keyName}가 서버에 이미 설정돼 있어요. 키를 입력하지 않아도 됩니다.`
-                    : `${currentProviderInfo.keyName}를 입력하세요. 키는 브라우저 메모리에만 보관되고 새로고침하면 사라집니다.`}
-              </p>
-
-              <label className="field">
-                <span>백엔드 주소 <em>(비워두면 같은 서버)</em></span>
-                <input
-                  value={draftAi.backend}
-                  onChange={(event) => setDraftAi((prev) => ({ ...prev, backend: event.target.value }))}
-                  placeholder="https://api.myserver.com"
-                />
-              </label>
-              </section>
-
-              <section className="settings-section">
-                <h3>문서</h3>
-                <div className="action-grid">
-                  <button className="action-btn" disabled={!pdfDoc || !fileBytes} onClick={downloadOriginal}>
-                    <FileDown size={18} />
-                    <span>원본 PDF</span>
-                  </button>
-                </div>
-              </section>
-
-              <section className="settings-section">
-                <h3>분석 내보내기</h3>
-                <div className="action-grid">
-                  <button className="action-btn" disabled={!pdfDoc || clips.length === 0} onClick={downloadAnalysisJson}>
-                    <Braces size={18} />
-                    <span>JSON</span>
-                  </button>
-                  <button className="action-btn" disabled={!pdfDoc || clips.length === 0} onClick={downloadAnalysisHtml}>
-                    <FileCode2 size={18} />
-                    <span>HTML 리포트</span>
-                  </button>
-                </div>
-                <p className="note">HTML 리포트는 브라우저에서 바로 열어 읽기 좋고, JSON은 재가공이나 백업에 적합합니다.</p>
-              </section>
-            </div>
-            <div className="modal-foot">
-              <button className="ghost" onClick={() => setSettingsOpen(false)}>취소</button>
-              <button
-                className="primary"
-                disabled={currentProviderDisabled}
-                onClick={() => {
-                  setAi({
-                    ...draftAi,
-                    backend: draftAi.backend.trim().replace(/\/$/, ""),
-                    key: providerHasServerKey ? "" : draftAi.key.trim(),
-                    model: draftAi.model.trim()
-                  });
-                  setSettingsOpen(false);
-                }}
-              >
-                저장
-              </button>
-            </div>
-          </div>
-        </div>
+        <SettingsModal
+          draftAi={draftAi}
+          setDraftAi={setDraftAi}
+          serverKeyProviders={serverKeyProviders}
+          disabledProviders={disabledProviders}
+          onClose={closeSettings}
+          onSave={saveSettings}
+          hasPdf={!!pdfDoc}
+          hasFileBytes={!!fileBytes}
+          clipCount={clips.length}
+          onDownloadOriginal={downloadOriginal}
+          onDownloadJson={downloadAnalysisJson}
+          onDownloadHtml={downloadAnalysisHtml}
+        />
       )}
     </div>
   );
 }
 
-function ClipCard({
-  clip,
-  number,
-  active,
-  onFocus,
-  onHover,
-  onDelete,
-  onAnalyze,
-  onAsk
-}: {
-  clip: Clip;
-  number: number;
-  active: boolean;
-  onFocus: () => void;
-  onHover: (active: boolean) => void;
-  onDelete: () => void;
-  onAnalyze: () => void;
-  onAsk: (question: string) => void;
-}) {
-  const [question, setQuestion] = useState("");
-  const textBadge = clip.extractedText ? `텍스트 ${clip.extractedText.length}자 추출됨` : "이미지만";
-
-  return (
-    <article
-      className={`clip ${active ? "active" : ""}`}
-      onMouseEnter={() => onHover(true)}
-      onMouseLeave={() => onHover(false)}
-    >
-      <div className="clip-head" onClick={onFocus}>
-        <div className="clip-title">
-          <span className="badge-num">{number}</span>
-          <div>
-            <strong>p.{clip.pageNo}</strong>
-            <span>{textBadge}</span>
-          </div>
-        </div>
-        <button
-          className="clip-delete"
-          aria-label="선택 영역 삭제"
-          title="삭제"
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Trash2 size={15} />
-        </button>
-      </div>
-
-      <button className="clip-preview" onClick={onFocus}>
-        <img src={clip.dataUrl} alt={`p.${clip.pageNo} 선택 영역`} />
-      </button>
-
-      {!clip.started && (
-        <button className="analyze-btn" disabled={clip.loading} onClick={onAnalyze}>
-          {clip.loading ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
-          <span>{clip.loading ? "분석 중" : "이 영역 분석"}</span>
-        </button>
-      )}
-
-      {(clip.started || clip.turns.length > 0) && (
-        <>
-          <div className="thread">
-            {clip.turns.map((turn, index) => (
-              <div key={`${turn.role}-${index}`} className={`turn ${turn.role === "assistant" ? "ai" : turn.role}`}>
-                <span className="who">{turn.role === "user" ? "나" : "AI"}</span>
-                {turn.truncated && (
-                  <div className="turn-warning">
-                    응답이 출력 한도 때문에 잘렸을 수 있습니다
-                    {turn.finishReason ? ` (${turn.finishReason})` : ""}.
-                  </div>
-                )}
-                {turn.role === "assistant" ? (
-                  <div className="body" dangerouslySetInnerHTML={{ __html: renderMarkdown(turn.text) }} />
-                ) : (
-                  <div className="body">{turn.text}</div>
-                )}
-              </div>
-            ))}
-            {clip.loading && (
-              <div className="turn thinking">
-                <span className="who">AI</span>
-                <div className="thinking-row">
-                  <Loader2 className="spin" size={15} />
-                  <span>선택 영역을 읽고 있습니다</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="preset-row">
-            {clip.turns.some((turn) => turn.truncated) && (
-              <button disabled={clip.loading} onClick={() => onAsk("방금 답변이 중간에 끊겼어. 앞의 내용을 반복하지 말고 끊긴 지점부터 이어서 완성해줘.")}>
-                이어서 받기
-              </button>
-            )}
-            {PRESETS.map((preset, index) => (
-              <button key={preset} disabled={clip.loading} onClick={() => onAsk(preset)}>
-                {PRESET_LABELS[index]}
-              </button>
-            ))}
-          </div>
-
-          <form
-            className="followup"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const trimmed = question.trim();
-              if (!trimmed) return;
-              setQuestion("");
-              onAsk(trimmed);
-            }}
-          >
-            <textarea
-              rows={1}
-              value={question}
-              disabled={clip.loading}
-              placeholder="이 영역에 대해 더 물어보기..."
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-            <button className="send" disabled={clip.loading || !question.trim()} aria-label="질문 보내기">
-              <SendHorizontal size={17} />
-            </button>
-          </form>
-        </>
-      )}
-    </article>
-  );
-}
