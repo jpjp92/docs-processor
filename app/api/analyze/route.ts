@@ -12,6 +12,7 @@ export async function POST(request: Request) {
       provider?: unknown;
       model?: unknown;
       messages?: unknown;
+      maxTokens?: unknown;
     } | null;
 
     if (!body || !isProvider(body.provider) || !Array.isArray(body.messages)) {
@@ -40,25 +41,36 @@ export async function POST(request: Request) {
       );
     }
 
+    const requestedMaxTokens =
+      typeof body.maxTokens === "number" && Number.isFinite(body.maxTokens)
+        ? Math.round(body.maxTokens)
+        : 4096;
+    const maxTokens = Math.min(Math.max(requestedMaxTokens, 1024), 32000);
+
     const result = await callProvider(body.provider, {
       apiKey,
-      maxTokens: 4096,
+      maxTokens,
       messages: body.messages as StandardMessage[],
       model: typeof body.model === "string" ? body.model : undefined
     });
 
     if (!result.text) {
       return Response.json(
-        { error: "모델이 빈 응답을 반환했습니다." },
+        {
+          error: `모델이 빈 응답을 반환했습니다.${result.finishReason ? ` (${result.finishReason})` : ""}`,
+          finishReason: result.finishReason,
+          truncated: result.truncated
+        },
         { status: 502 }
       );
     }
 
     return Response.json(result);
   } catch (error) {
-    console.error("[analyze]", error instanceof Error ? error.name : "UnknownError");
+    const message = error instanceof Error ? error.message : "분석 요청에 실패했습니다.";
+    console.error("[analyze]", message);
     return Response.json(
-      { error: "분석 요청에 실패했습니다. 모델/키 설정을 확인하세요." },
+      { error: message },
       { status: 502 }
     );
   }

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Verso — PDF reading companion",
-  description: "Read, mark, and understand any PDF with multi-provider AI"
+  title: "Verso — Document analysis workspace",
+  description: "Analyze PDFs and turn images into reviewed Word documents with multi-provider AI"
 };
 
 export default function RootLayout({

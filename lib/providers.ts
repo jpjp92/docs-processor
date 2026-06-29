@@ -159,15 +159,29 @@ async function callGemini({ messages, model, apiKey, maxTokens }: ProviderOption
 
   const data = await response.json();
   const candidate = data.candidates?.[0];
+  if (!candidate) {
+    const blockReason = data.promptFeedback?.blockReason;
+    throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : "Gemini 응답에 후보가 없습니다.");
+  }
+
   const text = (candidate?.content?.parts || [])
     .map((part: { text?: string }) => part.text || "")
     .join("\n")
     .trim();
+  const finishReason = candidate?.finishReason;
+  if (!text) {
+    const safety = Array.isArray(candidate?.safetyRatings)
+      ? candidate.safetyRatings
+          .map((rating: { category?: string; probability?: string }) => `${rating.category || "safety"}:${rating.probability || "?"}`)
+          .join(", ")
+      : "";
+    throw new Error(`Gemini 빈 응답${finishReason ? ` (${finishReason})` : ""}${safety ? ` - ${safety}` : ""}`);
+  }
 
   return {
     text,
-    finishReason: candidate?.finishReason,
-    truncated: candidate?.finishReason === "MAX_TOKENS"
+    finishReason,
+    truncated: finishReason === "MAX_TOKENS"
   };
 }
 

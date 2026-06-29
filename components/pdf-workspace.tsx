@@ -1,6 +1,7 @@
 "use client";
 
-import { FilePlus2, Settings } from "lucide-react";
+import { FilePlus2, Images, Settings } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import ClipCard from "@/components/clip-card";
@@ -576,12 +577,16 @@ export default function PdfWorkspace() {
         <div className="topbar-left">
           <div className="brand">
             <span className="dot" />
-            Verso <small>read, mark, understand</small>
+            Verso <small>document analysis workspace</small>
           </div>
         </div>
         <div className="doc-name">{fileName}</div>
         <div className="spacer" />
         <div className="topbar-actions">
+          <Link className="topbar-link" href="/refine">
+            <Images size={18} aria-hidden="true" />
+            이미지 문서화
+          </Link>
           {pdfDoc && (
             <button className="icon-btn" type="button" aria-label="새 문서 분석" title="새 문서 분석" onClick={resetDocument}>
               <FilePlus2 size={19} />
@@ -797,4 +802,3 @@ export default function PdfWorkspace() {
     </div>
   );
 }
-
