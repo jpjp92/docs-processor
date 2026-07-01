@@ -263,6 +263,12 @@ async function* iterateSse(response: Response): AsyncGenerator<string> {
       if (payload && payload !== "[DONE]") yield payload;
     }
   }
+
+  const trailing = buffer.trim();
+  if (trailing.startsWith("data:")) {
+    const payload = trailing.slice(5).trim();
+    if (payload && payload !== "[DONE]") yield payload;
+  }
 }
 
 async function* streamOpenAI({ messages, model, apiKey, maxTokens }: ProviderOptions): AsyncGenerator<string> {

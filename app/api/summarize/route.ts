@@ -14,6 +14,7 @@ const ENV_KEYS: Record<Provider, string | undefined> = {
   openai: process.env.OPENAI_API_KEY,
   gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
 };
+const SUMMARY_OUTPUT_TOKENS = 8192;
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as {
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const delta of streamProvider(provider, { apiKey, maxTokens: 2048, messages, model })) {
+        for await (const delta of streamProvider(provider, { apiKey, maxTokens: SUMMARY_OUTPUT_TOKENS, messages, model })) {
           controller.enqueue(encoder.encode(delta));
         }
       } catch (error) {
