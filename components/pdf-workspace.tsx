@@ -15,6 +15,11 @@ import { loadPdfJs } from "@/lib/pdf-workspace/pdfjs";
 import { buildReportHtml } from "@/lib/pdf-workspace/report";
 import type { AnalysisExport, Clip, MessagePart, PdfDocument, PdfPage } from "@/lib/pdf-workspace/types";
 
+type PageThumb = {
+  page: number;
+  url: string | null;
+};
+
 export default function PdfWorkspace() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -23,6 +28,7 @@ export default function PdfWorkspace() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasAreaRef = useRef<HTMLDivElement>(null);
   const pendingScrollRatioRef = useRef<{ left: number; top: number } | null>(null);
+  const thumbBuildIdRef = useRef(0);
 
   const [pdfJsReady, setPdfJsReady] = useState(false);
   const [pdfDoc, setPdfDoc] = useState<PdfDocument | null>(null);
@@ -31,7 +37,7 @@ export default function PdfWorkspace() {
   const [fileName, setFileName] = useState("");
   const [fileBytes, setFileBytes] = useState<ArrayBuffer | null>(null);
   const [fileUrl, setFileUrl] = useState("");
-  const [thumbs, setThumbs] = useState<Array<{ page: number; url: string }>>([]);
+  const [thumbs, setThumbs] = useState<PageThumb[]>([]);
   const [clips, setClips] = useState<Clip[]>([]);
   const [selecting, setSelecting] = useState(false);
   const [activeClipId, setActiveClipId] = useState<number | null>(null);
@@ -203,14 +209,16 @@ export default function PdfWorkspace() {
     setPdfDoc(doc);
     setCurrentPage(1);
     setClips([]);
-    setThumbs([]);
+    const thumbBuildId = thumbBuildIdRef.current + 1;
+    thumbBuildIdRef.current = thumbBuildId;
+    setThumbs(Array.from({ length: doc.numPages }, (_, index) => ({ page: index + 1, url: null })));
     resetSummary();
-    await buildThumbs(doc);
+    void buildThumbs(doc, thumbBuildId);
   }
 
-  async function buildThumbs(doc: PdfDocument) {
-    const result: Array<{ page: number; url: string }> = [];
+  async function buildThumbs(doc: PdfDocument, buildId: number) {
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+      if (thumbBuildIdRef.current !== buildId) return;
       const page = await doc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 0.22 });
       const canvas = document.createElement("canvas");
@@ -219,9 +227,12 @@ export default function PdfWorkspace() {
       const context = canvas.getContext("2d");
       if (!context) continue;
       await page.render({ canvasContext: context, viewport }).promise;
-      result.push({ page: pageNumber, url: canvas.toDataURL("image/png") });
+      if (thumbBuildIdRef.current !== buildId) return;
+      const url = canvas.toDataURL("image/png");
+      setThumbs((current) =>
+        current.map((thumb) => (thumb.page === pageNumber ? { ...thumb, url } : thumb))
+      );
     }
-    setThumbs(result);
   }
 
   function downloadOriginal() {
@@ -238,6 +249,7 @@ export default function PdfWorkspace() {
   }
 
   function resetDocument() {
+    thumbBuildIdRef.current += 1;
     if (fileUrl) URL.revokeObjectURL(fileUrl);
     setPdfDoc(null);
     setCurrentPage(1);
@@ -292,13 +304,19 @@ export default function PdfWorkspace() {
     };
   }
 
-  function downloadAnalysisJson() {
+  async function downloadAnalysisDocx() {
     const payload = buildAnalysisExport();
-    downloadTextFile(
-      `${safeFileStem(fileName)}-analysis.json`,
-      JSON.stringify(payload, null, 2),
-      "application/json;charset=utf-8"
-    );
+    const { analysisToDocxBlob } = await import("@/lib/pdf-workspace/docx-report");
+    const blob = await analysisToDocxBlob(payload);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${safeFileStem(fileName)}-analysis.docx`;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
   function downloadAnalysisHtml() {
@@ -420,7 +438,6 @@ export default function PdfWorkspace() {
 
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (ai.key) headers["x-provider-key"] = ai.key;
 
       const response = await fetch("/api/analyze", {
         method: "POST",
@@ -618,7 +635,11 @@ export default function PdfWorkspace() {
                   className={`thumb ${thumb.page === currentPage ? "active" : ""}`}
                   onClick={() => setCurrentPage(thumb.page)}
                 >
-                  <img src={thumb.url} alt={`${thumb.page} 페이지 미리보기`} />
+                  {thumb.url ? (
+                    <img src={thumb.url} alt={`${thumb.page} 페이지 미리보기`} />
+                  ) : (
+                    <span className="thumb-loading" aria-label={`${thumb.page} 페이지 미리보기 생성 중`} />
+                  )}
                   <span className="num">{thumb.page}</span>
                 </button>
               ))}
@@ -651,7 +672,8 @@ export default function PdfWorkspace() {
               }}
             >
               <div className="glyph" />
-              <p><b>PDF를 끌어다 놓거나</b> 파일을 선택하세요</p>
+              <p><b>PDF를 선택해주세요</b></p>
+              <p className="dropzone-sub">미리보기, 영역 선택, 요약을 시작합니다.</p>
               <button className="upload-btn" disabled={!pdfJsReady} onClick={() => fileInputRef.current?.click()}>
                 {pdfJsReady ? "PDF 열기" : "PDF 엔진 로딩 중"}
               </button>
@@ -795,7 +817,7 @@ export default function PdfWorkspace() {
           hasFileBytes={!!fileBytes}
           clipCount={clips.length}
           onDownloadOriginal={downloadOriginal}
-          onDownloadJson={downloadAnalysisJson}
+          onDownloadDocx={downloadAnalysisDocx}
           onDownloadHtml={downloadAnalysisHtml}
         />
       )}

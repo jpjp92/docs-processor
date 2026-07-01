@@ -49,7 +49,6 @@ export function useSummary({
       }
 
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (ai.key) headers["x-provider-key"] = ai.key;
       // 요약은 서버에서 Gemini Flash를 기본으로 쓴다. 비활성 프로바이더면 provider를 비워 서버 기본값에 맡긴다.
       const provider = disabledProviders.includes(ai.provider) ? undefined : ai.provider;
 

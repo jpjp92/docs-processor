@@ -13,13 +13,13 @@ export const PROVIDER_INFO: Record<Provider, { label: string; keyName: string; m
   openai: {
     label: "GPT (OpenAI)",
     keyName: "OpenAI API 키",
-    model: "gpt-5-mini",
+    model: "gpt-5.4-mini",
     url: "platform.openai.com"
   },
   gemini: {
     label: "Gemini (Google)",
     keyName: "Google AI Studio 키",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.5-flash",
     url: "aistudio.google.com"
   }
 };

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Download, FileText, Images, Loader2, RotateCcw, Settings2, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, ChevronDown, Download, FileText, Images, Loader2, RotateCcw, Settings2, Trash2, Upload, Workflow } from "lucide-react";
 import { marked } from "marked";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_MODELS, DISABLED_PROVIDERS, type Provider, type StandardMessage } from "@/lib/providers";
 import { parseExtract, parseReview, type ReviewNote } from "@/lib/refine/parser";
 import { runPool } from "@/lib/refine/pool";
-import { buildMergeReviewPrompt, buildPolishDocumentPrompt, EXTRACT_PROMPT } from "@/lib/refine/prompts";
+import { buildMergeReviewPrompt, buildPolishDocumentPrompt, EXTRACT_PROMPT, RECITATION_SAFE_EXTRACT_PROMPT } from "@/lib/refine/prompts";
 
 type RefineImage = {
   id: string;
@@ -45,7 +45,22 @@ const PROVIDER_LABELS: Record<Provider, string> = {
   openai: "OpenAI"
 };
 
-const DEFAULT_PROVIDER: Provider = "gemini";
+const DEFAULT_PROVIDER = "gemini" satisfies Exclude<Provider, "claude">;
+
+const MODEL_OPTIONS: Record<Exclude<Provider, "claude">, Array<{ label: string; value: string; hint: string }>> = {
+  gemini: [
+    { label: "Gemini 3.5 Flash", value: "gemini-3.5-flash", hint: "최신 Flash / 고품질" },
+    { label: "Gemini 2.5 Flash", value: "gemini-2.5-flash", hint: "안정적 / 빠른 처리" }
+  ],
+  openai: [
+    { label: "GPT-5.4 mini", value: "gpt-5.4-mini", hint: "추천 / 비용·속도 균형" },
+    { label: "GPT-5.4", value: "gpt-5.4", hint: "고품질 / 5.5보다 절약" }
+  ]
+};
+
+function getModelOptions(provider: Provider) {
+  return provider === "openai" || provider === "gemini" ? MODEL_OPTIONS[provider] : [];
+}
 
 function renderMarkdown(markdown: string) {
   try {
@@ -61,6 +76,15 @@ function needsDocumentPolish(markdown: string) {
   const lacksInterpretation = hasTable && !/^#{2,3}\s*(읽는\s*법|해석)\b/m.test(markdown);
   const hasSourceHeading = /^#{1,3}\s*(이미지\s*\d+|.+\.(jpg|jpeg|png|webp))\b/imu.test(markdown);
   return lacksSummary || lacksInterpretation || hasSourceHeading;
+}
+
+function isGeminiRecitationError(error: unknown) {
+  return error instanceof Error && /Gemini.+RECITATION|RECITATION/i.test(error.message);
+}
+
+function fileNameFromMarkdown(markdown: string) {
+  const heading = /^#\s+(.+)$/m.exec(markdown)?.[1]?.trim();
+  return (heading || "refine-document").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80).trim() || "refine-document";
 }
 
 async function readImageFile(file: File): Promise<RefineImage> {
@@ -82,12 +106,12 @@ async function readImageFile(file: File): Promise<RefineImage> {
 
 export default function RefineWorkspace() {
   const fileRef = useRef<HTMLInputElement>(null);
+  const modelSelectRef = useRef<HTMLDivElement>(null);
   const [provider, setProvider] = useState<Provider>(DEFAULT_PROVIDER);
-  const [model, setModel] = useState(DEFAULT_MODELS[DEFAULT_PROVIDER]);
-  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState(MODEL_OPTIONS[DEFAULT_PROVIDER][0].value);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [serverKeyProviders, setServerKeyProviders] = useState<Provider[]>([]);
   const [disabledProviders, setDisabledProviders] = useState<Provider[]>(DISABLED_PROVIDERS);
-  const [docTitle, setDocTitle] = useState("이미지 분석 결과");
   const [images, setImages] = useState<RefineImage[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [running, setRunning] = useState(false);
@@ -100,7 +124,9 @@ export default function RefineWorkspace() {
   const [rawView, setRawView] = useState(false);
 
   const hasServerKey = serverKeyProviders.includes(provider);
-  const canRun = images.length > 0 && !running && !disabledProviders.includes(provider) && (hasServerKey || !!apiKey.trim());
+  const canRun = images.length > 0 && !running && !disabledProviders.includes(provider) && hasServerKey;
+  const modelOptions = getModelOptions(provider);
+  const selectedModel = modelOptions.find((option) => option.value === model) || modelOptions[0];
   const reviewedHtml = useMemo(() => renderMarkdown(result?.reviewed || ""), [result?.reviewed]);
   const extractedHtml = useMemo(() => renderMarkdown(result?.extracted || ""), [result?.extracted]);
 
@@ -126,8 +152,26 @@ export default function RefineWorkspace() {
 
   function switchProvider(nextProvider: Provider) {
     setProvider(nextProvider);
-    setModel(DEFAULT_MODELS[nextProvider]);
+    setModel(getModelOptions(nextProvider)[0]?.value || DEFAULT_MODELS[nextProvider]);
+    setModelMenuOpen(false);
   }
+
+  useEffect(() => {
+    function closeModelMenu(event: MouseEvent) {
+      if (!modelSelectRef.current?.contains(event.target as Node)) setModelMenuOpen(false);
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setModelMenuOpen(false);
+    }
+
+    document.addEventListener("mousedown", closeModelMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeModelMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
 
   const addFiles = useCallback(async (fileList: FileList | File[] | null) => {
     if (!fileList) return;
@@ -166,7 +210,6 @@ export default function RefineWorkspace() {
 
   async function callAnalyze(messages: StandardMessage[], options: { maxTokens?: number } = {}) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (!hasServerKey && apiKey.trim()) headers["x-provider-key"] = apiKey.trim();
 
     const response = await fetch("/api/analyze", {
       body: JSON.stringify({
@@ -199,8 +242,8 @@ export default function RefineWorkspace() {
       setStatus({ kind: "err", msg: `${PROVIDER_LABELS[provider]}는 현재 비활성화되어 있습니다.` });
       return;
     }
-    if (!hasServerKey && !apiKey.trim()) {
-      setStatus({ kind: "err", msg: "서버 키가 없으면 API 키를 입력해야 합니다." });
+    if (!hasServerKey) {
+      setStatus({ kind: "err", msg: `${PROVIDER_LABELS[provider]} 서버 키가 .env에 연결되어 있지 않습니다.` });
       return;
     }
     if (images.length === 0) {
@@ -220,16 +263,25 @@ export default function RefineWorkspace() {
       const extractResults = await runPool(
         images,
         4,
-        (image) =>
-          callAnalyze([
+        async (image) => {
+          const messages = (prompt: string): StandardMessage[] => [
             {
               content: [
-                { text: EXTRACT_PROMPT, type: "text" },
+                { text: prompt, type: "text" },
                 { data: image.b64, mediaType: image.mime, type: "image" }
               ],
               role: "user"
             }
-          ], { maxTokens: 4096 }),
+          ];
+
+          try {
+            return await callAnalyze(messages(EXTRACT_PROMPT), { maxTokens: 4096 });
+          } catch (error) {
+            if (provider !== "gemini" || !isGeminiRecitationError(error)) throw error;
+            setStatus({ kind: "run", msg: "Gemini가 원문 전사를 차단해 구조화 추출로 다시 시도 중입니다." });
+            return callAnalyze(messages(RECITATION_SAFE_EXTRACT_PROMPT), { maxTokens: 4096 });
+          }
+        },
         (done, total) => {
           setStageMeta((current) => ({ ...current, extract: `${done}/${total}장` }));
           setStatus({ kind: "run", msg: `${total}장에서 텍스트를 추출 중입니다. ${done}/${total}장 완료` });
@@ -315,11 +367,8 @@ export default function RefineWorkspace() {
       setStageMeta((current) => ({ ...current, docx: "문서 변환 중", review: `${finalNotes.length}개 메모` }));
 
       setStatus({ kind: "run", msg: "Word 문서를 생성 중입니다." });
-      const title = docTitle.trim() || "이미지 분석 결과";
-      const today = new Date().toISOString().slice(0, 10);
-      const subtitle = `생성일 ${today} - 원본 ${okParts.length}장${reordered ? " - 쪽번호 순 정렬" : ""}`;
       const { markdownToDocxBlob } = await import("@/lib/refine/md2docx");
-      const docBlob = await markdownToDocxBlob(finalReviewed, { subtitle, title });
+      const docBlob = await markdownToDocxBlob(finalReviewed);
 
       setBlob(docBlob);
       setResult({ count: okParts.length, extracted, notes: finalNotes, reviewed: finalReviewed });
@@ -344,7 +393,7 @@ export default function RefineWorkspace() {
 
   function download() {
     if (!blob) return;
-    const name = (docTitle.trim() || "refine-document").replace(/[\\/:*?"<>|]/g, "_");
+    const name = fileNameFromMarkdown(result?.reviewed || "");
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.download = `${name}.docx`;
@@ -360,7 +409,7 @@ export default function RefineWorkspace() {
       <header className="refine-topbar">
         <div className="refine-brand">
           <span className="refine-mark">Refine</span>
-          <span>이미지를 검토된 Word 문서로</span>
+          <span>이미지를 Word로 정리</span>
         </div>
         <nav className="refine-actions" aria-label="작업 이동">
           <Link className="refine-nav-btn" href="/">
@@ -410,25 +459,42 @@ export default function RefineWorkspace() {
           </label>
 
           <label className="refine-field">
-            <span>API 키</span>
-            <input
-              autoComplete="off"
-              disabled={hasServerKey || running}
-              onChange={(event) => setApiKey(event.target.value)}
-              placeholder={hasServerKey ? "서버 .env 키 사용 중" : "API 키를 입력하세요"}
-              type="password"
-              value={apiKey}
-            />
-            <small className={hasServerKey ? "refine-key-state connected" : "refine-key-state"}>
-              {hasServerKey
-                ? `${PROVIDER_LABELS[provider]} 서버 키가 연결되어 있습니다.`
-                : "서버 키가 없으면 여기에 키를 입력해 요청합니다."}
-            </small>
-          </label>
-
-          <label className="refine-field">
             <span>모델</span>
-            <input disabled={running} onChange={(event) => setModel(event.target.value)} type="text" value={model} />
+            <div className={`model-select ${modelMenuOpen ? "open" : ""}`} ref={modelSelectRef}>
+              <button
+                aria-expanded={modelMenuOpen}
+                className="model-select-trigger"
+                disabled={running || modelOptions.length === 0}
+                onClick={() => setModelMenuOpen((value) => !value)}
+                type="button"
+              >
+                <span>
+                  <strong>{selectedModel?.label || model}</strong>
+                  <small>{selectedModel?.hint || model}</small>
+                </span>
+                <ChevronDown size={17} aria-hidden="true" />
+              </button>
+              {modelMenuOpen && (
+                <div className="model-select-menu" role="listbox">
+                  {modelOptions.map((option) => (
+                    <button
+                      aria-selected={option.value === model}
+                      className={option.value === model ? "active" : ""}
+                      key={option.value}
+                      onClick={() => {
+                        setModel(option.value);
+                        setModelMenuOpen(false);
+                      }}
+                      role="option"
+                      type="button"
+                    >
+                      <strong>{option.label}</strong>
+                      <small>{option.hint}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </label>
 
           <div
@@ -448,8 +514,8 @@ export default function RefineWorkspace() {
             tabIndex={0}
           >
             <Upload size={24} aria-hidden="true" />
-            <strong>이미지를 끌어다 놓거나 선택</strong>
-            <span>PNG, JPG, WEBP - 최대 24장</span>
+            <strong>이미지 선택</strong>
+            <span>PNG / JPG / WEBP / 최대 24장</span>
           </div>
           <input
             accept="image/*"
@@ -477,11 +543,6 @@ export default function RefineWorkspace() {
             </div>
           )}
 
-          <label className="refine-field">
-            <span>문서 제목</span>
-            <input disabled={running} onChange={(event) => setDocTitle(event.target.value)} type="text" value={docTitle} />
-          </label>
-
           <button className="refine-run" disabled={!canRun} onClick={() => void run()} type="button">
             {running ? <Loader2 className="spin-icon" size={18} aria-hidden="true" /> : <Images size={18} aria-hidden="true" />}
             {running ? "처리 중" : "분석 시작"}
@@ -491,8 +552,10 @@ export default function RefineWorkspace() {
         <section className="refine-results" aria-label="처리 결과">
           <div className="refine-panel refine-pipeline">
             <div className="refine-pipeline-head">
-              <strong>생성 파이프라인</strong>
-              <span>{images.length ? `원본 ${images.length}장` : "이미지를 추가하세요"}</span>
+              <div>
+                <Workflow size={18} aria-hidden="true" />
+                <strong>생성 파이프라인</strong>
+              </div>
             </div>
             <div className="refine-stage-track">
               <Stage detail={stageMeta.extract || "장별 OCR"} index={1} state={stages.extract} title="병렬 추출" />
@@ -512,7 +575,7 @@ export default function RefineWorkspace() {
             {!result ? (
               <div className="refine-empty">
                 <Images size={32} aria-hidden="true" />
-                <p>이미지를 올리고 분석을 시작하면 해석이 포함된 검토본, 추출본, 변경 사항이 여기에 표시됩니다.</p>
+                <p>이미지를 올리면 추출본과 생성 상태가 표시됩니다.</p>
               </div>
             ) : (
               <>

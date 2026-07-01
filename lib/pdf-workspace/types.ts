@@ -47,7 +47,7 @@ export type PdfJsLib = {
 };
 
 /** 설정 모달이 다루는 AI 설정. */
-export type AiSettings = { provider: Provider; model: string; key: string };
+export type AiSettings = { provider: Provider; model: string };
 
 /** 문서 전체 요약 패널의 상태. */
 export type SummaryState = {

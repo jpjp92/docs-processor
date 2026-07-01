@@ -3,7 +3,6 @@ import {
   BorderStyle,
   Document,
   Footer,
-  Header,
   HeadingLevel,
   LevelFormat,
   Packer,
@@ -29,6 +28,24 @@ const COLOR = {
   text: "202735"
 };
 
+function normalizeInlineHtml(text: string) {
+  return text
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\/\s*(p|div|li|tr)\s*>/gi, "\n")
+    .replace(/<\s*\/?\s*(strong|b)\s*>/gi, "**")
+    .replace(/<\s*\/?\s*(em|i)\s*>/gi, "*")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function parseInline(text: string, base: Record<string, unknown> = {}) {
   const runs: TextRun[] = [];
   const matcher = /(\*\*([^*]+)\*\*)|(__([^_]+)__)|(\*([^*]+)\*)|(_([^_]+)_)|(`([^`]+)`)|(~~([^~]+)~~)/g;
@@ -36,7 +53,10 @@ function parseInline(text: string, base: Record<string, unknown> = {}) {
   let match: RegExpExecArray | null;
   const push = (value: string, opts: Record<string, unknown> = {}) => {
     if (!value) return;
-    runs.push(new TextRun({ text: value, ...base, ...opts }));
+    value.split("\n").forEach((part, index) => {
+      if (index > 0) runs.push(new TextRun({ break: 1 }));
+      if (part) runs.push(new TextRun({ text: part, ...base, ...opts }));
+    });
   };
 
   while ((match = matcher.exec(text)) !== null) {
@@ -93,7 +113,7 @@ function makeTable(rows: string[][]) {
               borders,
               children: [
                 new Paragraph({
-                  children: parseInline(cell.trim(), rowIndex === 0 ? { bold: true, color: COLOR.heading } : {}),
+                  children: parseInline(normalizeInlineHtml(cell), rowIndex === 0 ? { bold: true, color: COLOR.heading } : {}),
                   spacing: { after: 0, line: 260 }
                 })
               ],
@@ -112,20 +132,12 @@ function makeTable(rows: string[][]) {
   return new Table({ rows: tableRows, width: { size: 100, type: WidthType.PERCENTAGE } });
 }
 
-function normalizeMarkdown(markdown: string, title?: string) {
+function normalizeMarkdown(markdown: string) {
   const lines = (markdown || "")
     .replace(/\r\n/g, "\n")
     .replace(/^@@NOTES\b.*$/gim, "")
     .replace(/^@@DOCUMENT\b.*$/gim, "")
     .split("\n");
-
-  const firstContentIndex = lines.findIndex((line) => line.trim());
-  if (firstContentIndex >= 0 && title) {
-    const first = lines[firstContentIndex].trim().replace(/^#\s+/, "").trim();
-    if (lines[firstContentIndex].trim().startsWith("# ") && first === title.trim()) {
-      lines.splice(firstContentIndex, 1);
-    }
-  }
 
   return normalizeNarrativeLists(lines).join("\n").trim();
 }
@@ -182,41 +194,10 @@ function normalizeNarrativeLists(lines: string[]) {
   return result;
 }
 
-export function buildDocument(markdown: string, opts: { title?: string; subtitle?: string } = {}) {
-  const lines = normalizeMarkdown(markdown, opts.title).split("\n");
+export function buildDocument(markdown: string) {
+  const lines = normalizeMarkdown(markdown).split("\n");
   const children: Array<Paragraph | Table> = [];
   let index = 0;
-
-  if (opts.title) {
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.RIGHT,
-        children: [new TextRun({ bold: true, color: COLOR.accent, font: FONT, size: 18, text: "REFINE DOCUMENT" })],
-        spacing: { after: 220 }
-      })
-    );
-    children.push(
-      new Paragraph({
-        children: [new TextRun({ bold: true, color: COLOR.heading, font: FONT, size: 42, text: opts.title })],
-        spacing: { after: opts.subtitle ? 70 : 120 }
-      })
-    );
-    if (opts.subtitle) {
-      children.push(
-        new Paragraph({
-          children: [new TextRun({ color: COLOR.muted, font: FONT, size: 19, text: opts.subtitle })],
-          spacing: { after: 170 }
-        })
-      );
-    }
-    children.push(
-      new Paragraph({
-        border: { bottom: { color: COLOR.accent, size: 10, style: BorderStyle.SINGLE } },
-        children: [],
-        spacing: { after: 280 }
-      })
-    );
-  }
 
   while (index < lines.length) {
     const line = lines[index];
@@ -360,16 +341,6 @@ export function buildDocument(markdown: string, opts: { title?: string; subtitle
             ]
           })
         },
-        headers: {
-          default: new Header({
-            children: [
-              new Paragraph({
-                alignment: AlignmentType.RIGHT,
-                children: [new TextRun({ color: COLOR.muted, font: FONT, size: 16, text: opts.title || "Refine" })]
-              })
-            ]
-          })
-        },
         properties: { page: { margin: { bottom: 1250, left: 1350, right: 1350, top: 1250 } } }
       }
     ],
@@ -385,6 +356,6 @@ export function buildDocument(markdown: string, opts: { title?: string; subtitle
   });
 }
 
-export async function markdownToDocxBlob(markdown: string, opts: { title?: string; subtitle?: string } = {}) {
-  return Packer.toBlob(buildDocument(markdown, opts));
+export async function markdownToDocxBlob(markdown: string) {
+  return Packer.toBlob(buildDocument(markdown));
 }

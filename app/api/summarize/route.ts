@@ -46,7 +46,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const apiKey = ENV_KEYS[provider]?.trim() || request.headers.get("x-provider-key")?.trim();
+  const apiKey = ENV_KEYS[provider]?.trim();
   if (!apiKey) {
     return Response.json({ error: `${provider} API 키가 없습니다.` }, { status: 401 });
   }

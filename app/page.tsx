@@ -9,8 +9,13 @@ export default function Home() {
           <span className="dot" />
           <span>Verso</span>
         </div>
-        <h1 id="launcher-title">작업을 선택하세요</h1>
-        <p>PDF를 읽고 분석하거나, 이미지 묶음을 검토된 Word 문서로 정리합니다.</p>
+        <div className="launcher-kicker">Document workspace</div>
+        <h1 id="launcher-title">
+          읽고, 정리하고,
+          <br />
+          리포트까지
+        </h1>
+        <p>PDF는 요약·리포트로, 이미지는 읽어 Word 문서로 정리합니다.</p>
       </section>
 
       <section className="launcher-grid" aria-label="작업 선택">
@@ -20,7 +25,7 @@ export default function Home() {
           </span>
           <span className="launcher-copy">
             <strong>PDF 분석</strong>
-            <span>PDF를 열고 영역 선택, 요약, AI 질의를 진행합니다.</span>
+            <span>영역 선택, 요약, 리포트 생성.</span>
           </span>
           <ArrowRight className="launcher-arrow" size={20} aria-hidden="true" />
         </Link>
@@ -30,8 +35,8 @@ export default function Home() {
             <Images size={24} />
           </span>
           <span className="launcher-copy">
-            <strong>이미지 → Word 문서</strong>
-            <span>여러 이미지를 OCR·검토한 뒤 docx로 생성합니다.</span>
+            <strong>이미지 문서화</strong>
+            <span>OCR, 통합 검토, Word 생성.</span>
           </span>
           <ArrowRight className="launcher-arrow" size={20} aria-hidden="true" />
         </Link>

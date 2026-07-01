@@ -29,13 +29,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const apiKey =
-      ENV_KEYS[body.provider]?.trim() || request.headers.get("x-provider-key")?.trim();
+    const apiKey = ENV_KEYS[body.provider]?.trim();
 
     if (!apiKey) {
       return Response.json(
         {
-          error: `${body.provider} API 키가 없습니다. 서버 .env에 설정하거나 설정창에서 키를 입력하세요.`
+          error: `${body.provider} API 키가 없습니다. 서버 .env에 설정하세요.`
         },
         { status: 401 }
       );

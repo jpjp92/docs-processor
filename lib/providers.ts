@@ -24,8 +24,8 @@ export type ProviderResult = {
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
   claude: "claude-sonnet-4-6",
-  openai: "gpt-5-mini",
-  gemini: "gemini-2.5-flash"
+  openai: "gpt-5.4-mini",
+  gemini: "gemini-3.5-flash"
 };
 
 export const DISABLED_PROVIDERS: Provider[] = ["claude"];
@@ -86,6 +86,50 @@ async function callClaude({ messages, model, apiKey, maxTokens }: ProviderOption
 async function callOpenAI({ messages, model, apiKey, maxTokens }: ProviderOptions) {
   const selectedModel = model || DEFAULT_MODELS.openai;
   const tokenLimit = maxTokens || 4096;
+  if (selectedModel.startsWith("gpt-5.4") || selectedModel.startsWith("gpt-5.5")) {
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        input: messages.map((message) => ({
+          role: message.role,
+          content: message.content.map((part) =>
+            part.type === "image"
+              ? {
+                  type: "input_image",
+                  image_url: `data:${part.mediaType};base64,${part.data}`
+                }
+              : { type: "input_text", text: part.text }
+          )
+        })),
+        max_output_tokens: tokenLimit,
+        model: selectedModel
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI ${response.status}: ${await response.text()}`);
+    }
+
+    const data = await response.json();
+    const text =
+      typeof data.output_text === "string"
+        ? data.output_text
+        : (data.output || [])
+            .flatMap((item: { content?: Array<{ text?: string; type?: string }> }) => item.content || [])
+            .map((part: { text?: string }) => part.text || "")
+            .join("\n");
+
+    return {
+      text: text.trim(),
+      finishReason: data.status,
+      truncated: data.status === "incomplete"
+    };
+  }
+
   const body = {
     model: selectedModel,
     messages: messages.map((message) => ({
@@ -170,6 +214,9 @@ async function callGemini({ messages, model, apiKey, maxTokens }: ProviderOption
     .trim();
   const finishReason = candidate?.finishReason;
   if (!text) {
+    if (finishReason === "RECITATION") {
+      throw new Error("Gemini가 원문 재현으로 판단해 응답을 차단했습니다 (RECITATION).");
+    }
     const safety = Array.isArray(candidate?.safetyRatings)
       ? candidate.safetyRatings
           .map((rating: { category?: string; probability?: string }) => `${rating.category || "safety"}:${rating.probability || "?"}`)
